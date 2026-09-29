@@ -1,0 +1,14 @@
+{
+  "name": "Calypço Budget",
+  "short_name": "Budget Calypço",
+  "description": "Protéger l'épargne et suivre le projet Calypço",
+  "lang": "fr",
+  "start_url": "/calypco-budget-site/",
+  "scope": "/calypco-budget-site/",
+  "display": "standalone",
+  "background_color": "#f4f8f6",
+  "theme_color": "#102d37",
+  "icons": [
+    { "src": "/calypco-budget-site/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
