@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { addExpense, ganttTimeline, installments, monthlySavings, monthlyTable, removeGanttBlock, seed, snapshot, updateGanttBlock, updateGanttLine } from './budget.js';
+import { addExpense, forecastSavings, ganttTimeline, installments, monthlySavings, monthlyTable, removeGanttBlock, seed, snapshot, updateGanttBlock, updateGanttLine } from './budget.js';
 
 const example = () => {
   const data = seed();
@@ -43,6 +43,24 @@ test('Uber est compté à mesure des gains, avec impact immédiat sur le cumul e
   data.incomes.pop();
   data.expenses.pop();
   assert.equal(monthlySavings(data, '2026-10'), 100000);
+});
+
+test('le Gantt prévu garde les objectifs Uber séparés des gains enregistrés', () => {
+  const data = example();
+  data.budgets['2026-10'] = { income: 120000, salaryCents: 100000, uberTargetCents: 20000, categories: { Nourriture: 10000 } };
+  data.budgets['2026-11'] = { income: 175000, salaryCents: 150000, uberTargetCents: 25000, categories: { Nourriture: 50000 } };
+  assert.equal(forecastSavings(data, '2026-10'), 110000);
+  assert.equal(monthlySavings(data, '2026-10'), 90000);
+  assert.equal(monthlyTable(data)[1].forecastSavingsCumulative, 235000);
+  assert.equal(monthlyTable(data)[1].savingsCumulative, 190000);
+  assert.equal(ganttTimeline(data, { forecastUber: true })[1].balance, 215000);
+  assert.equal(ganttTimeline(data)[1].balance, 170000);
+  data.incomes.push({ id: 'u1', kind: 'uber', date: '2026-10-06', cents: 10000 });
+  assert.equal(forecastSavings(data, '2026-10'), 110000);
+  assert.equal(monthlyTable(data)[1].projectBalance, 180000);
+  data.incomes.push({ id: 'u2', kind: 'uber', date: '2026-10-13', cents: 20000 });
+  assert.equal(forecastSavings(data, '2026-10'), 120000);
+  assert.equal(ganttTimeline(data, { forecastUber: true })[1].balance, 225000);
 });
 
 test('une ligne payée et une dépense ajoutée affectent les blocs suivants', () => {
