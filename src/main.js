@@ -1,6 +1,7 @@
 import './style.css';
-import { currentUser, signIn, signUp, signOut, readBudget, writeBudget } from './cloud.js';
+import { currentUser, signIn, signOut, readBudget, writeBudget } from './cloud.js';
 import { addExpense, externalForMonth, ganttTimeline, money, monthKey, monthlySavings, monthlyTable, seed, snapshot, uid } from './budget.js';
+import { makePinRecord, verifyPin } from './pin.js';
 
 const STORAGE = 'calypco-budget-v2';
 const projectCategories = ['Voyage Guinée', 'Piscine', 'Toboggan', 'Plateforme', 'Plomberie', 'Électricité', 'Carrelage', 'Main-d’œuvre', 'Transport', 'Matériaux', 'Administratif', 'Autres travaux'];
@@ -18,13 +19,19 @@ let data = seed();
 let user = null;
 let syncError = '';
 let pendingSync = Promise.resolve();
+let locked = false;
+let pinFailures = 0;
+let retryAt = 0;
+let hiddenAt = 0;
 let month = monthKey(today()) < '2026-10' ? '2026-10' : monthKey(today());
 let view = 'accueil';
 let dialog = false;
 let selectedBlock = '';
 const app = document.querySelector('#app');
+localStorage.removeItem(STORAGE);
+const pinKey = id => `calypco-pin-${id}`;
+const pinRecord = () => { try { return JSON.parse(localStorage.getItem(pinKey(user.$id))); } catch { return null; } };
 const save = () => {
-  localStorage.setItem(STORAGE, JSON.stringify(data));
   if (!user) return;
   const copy = structuredClone(data);
   pendingSync = pendingSync.catch(() => {}).then(() => writeBudget(user.$id, copy)).then(() => { syncError = ''; }).catch(error => { syncError = error.message; render(); });
@@ -75,24 +82,25 @@ function forecasts() {
 
 function settings() {
   const times = { matin: '08:00', midi: '12:30', soir: '20:00', ...data.settings.reminderTimes };
+  const hasPin = Boolean(pinRecord());
   return `<section class="panel"><h2>Rappels sur téléphone</h2><p class="note">Trois rappels par jour, aux heures locales choisies, lorsque l’application est ouverte. Pour recevoir des alertes quand elle est fermée, il faut encore configurer un service push.</p>
     <label class="check"><input id="notifications" type="checkbox" ${data.settings.notifications ? 'checked' : ''}/> Activer les notifications</label>
     ${Object.entries(times).map(([slot, value]) => `<label>${safe(slot[0].toUpperCase() + slot.slice(1))} <input type="time" data-reminder="${slot}" value="${safe(value)}" /></label>`).join('')}</section>
-    <section class="panel"><h2>Compte et sauvegarde</h2><p class="note">Connecté : ${safe(user?.email)}. Les modifications se synchronisent avec Appwrite. ${syncError ? `Erreur de synchronisation : ${safe(syncError)}` : ''}</p><div class="actions"><button id="sync-now">Synchroniser</button><button id="sign-out">Déconnexion</button><button id="export-json">Exporter JSON</button><label class="file-label">Importer le plan / JSON<input id="import-json" type="file" accept="application/json,.json" hidden /></label></div></section>`;
+    <section class="panel"><h2>Accès sur ce téléphone</h2><p class="note">Le code PIN déverrouille seulement cet appareil tant que la session Appwrite existe. Il ne remplace pas ton mot de passe. Choisis un code de 6 chiffres que tu n’as jamais partagé.</p>
+      ${hasPin ? '<p>Code PIN activé sur cet appareil.</p><div class="actions"><button id="lock-now">Verrouiller maintenant</button><button id="remove-pin">Retirer le code PIN</button></div>' : '<form id="pin-form"><label>Nouveau code PIN <input name="pin" type="password" inputmode="numeric" autocomplete="new-password" pattern="[0-9]{6}" maxlength="6" required /></label><label>Confirmer le code <input name="confirm" type="password" inputmode="numeric" autocomplete="new-password" pattern="[0-9]{6}" maxlength="6" required /></label><p id="pin-error" class="error" role="alert"></p><button type="submit">Activer le code PIN</button></form>'}</section>
+    <section class="panel"><h2>Compte et sauvegarde</h2><p class="note">Connecté : ${safe(user?.email)}. Les modifications se synchronisent avec Appwrite. ${syncError ? `Erreur de synchronisation : ${safe(syncError)}` : ''}</p><div class="actions"><button id="sync-now">Synchroniser</button><button id="sign-out">Déconnexion</button><button id="export-json">Exporter une sauvegarde</button></div></section>`;
 }
 
 function login() {
-  app.innerHTML = `<header><div class="brand"><span class="brand-icon">∿</span><div><small>PROJET CALYPÇO</small><h1>Mon budget</h1></div></div></header><main><section class="panel login"><h2>Connexion Appwrite</h2><p class="note">Connecte-toi pour retrouver ton budget sur tes appareils. Si tu n’as pas encore de compte pour cette application, crée-en un avec ton adresse et un nouveau mot de passe.</p><form id="login-form"><label>Adresse e-mail <input name="email" type="email" autocomplete="username" required /></label><label>Mot de passe <input name="password" type="password" autocomplete="current-password" minlength="8" required /></label><p id="login-error" class="error" role="alert"></p><div class="actions"><button type="submit" name="action" value="login">Se connecter</button><button type="submit" name="action" value="signup">Créer un compte</button></div></form></section></main>`;
+  app.innerHTML = `<header><div class="brand"><span class="brand-icon">∿</span><div><small>PROJET CALYPÇO</small><h1>Mon budget</h1></div></div></header><main><section class="panel login"><h2>Connexion Appwrite</h2><p class="note">Connecte-toi avec le compte existant pour afficher tes prévisions privées et suivre tes dépenses.</p><form id="login-form"><label>Adresse e-mail <input name="email" type="email" autocomplete="username" required /></label><label>Mot de passe <input name="password" type="password" autocomplete="current-password" minlength="8" required /></label><p id="login-error" class="error" role="alert"></p><div class="actions"><button type="submit">Se connecter</button></div></form></section></main>`;
   document.querySelector('#login-form').onsubmit = async event => {
     event.preventDefault();
     const form = event.currentTarget;
-    const button = event.submitter;
     const { email, password } = Object.fromEntries(new FormData(form));
     form.querySelectorAll('button').forEach(item => item.disabled = true);
     try {
-      if (button.value === 'signup') await signUp(email, password);
       await signIn(email, password);
-      await initialize();
+      await initialize(true);
     } catch (error) {
       form.querySelector('#login-error').textContent = error.message;
       form.querySelectorAll('button').forEach(item => item.disabled = false);
@@ -100,16 +108,56 @@ function login() {
   };
 }
 
-async function initialize() {
-  user = await currentUser();
+async function loadBudget() {
+  if (!user) return;
   let remote = await readBudget(user.$id);
   if (!remote) {
     remote = seed();
     await writeBudget(user.$id, remote, true);
   }
   data = remote;
-  localStorage.setItem(STORAGE, JSON.stringify(data));
+  locked = false;
   render();
+}
+
+async function initialize(justSignedIn = false) {
+  user = await currentUser();
+  if (pinRecord() && !justSignedIn) { lock(); return; }
+  await loadBudget();
+}
+
+function lock() {
+  if (!user || !pinRecord()) return;
+  data = seed();
+  dialog = false;
+  locked = true;
+  render();
+}
+
+function lockScreen() {
+  app.innerHTML = `<header><div class="brand"><span class="brand-icon">∿</span><div><small>PROJET CALYPÇO</small><h1>Mon budget</h1></div></div></header><main><section class="panel login"><h2>Déverrouiller</h2><p class="note">Session de ${safe(user.email)}. Saisis ton code de cet appareil.</p><form id="unlock-form"><label>Code PIN <input name="pin" type="password" inputmode="numeric" autocomplete="off" pattern="[0-9]{6}" maxlength="6" required autofocus /></label><p id="unlock-error" class="error" role="alert"></p><button type="submit">Déverrouiller</button></form><p><button id="email-login">Se connecter avec e-mail et mot de passe</button></p></section></main>`;
+  document.querySelector('#unlock-form').onsubmit = async event => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    if (Date.now() < retryAt) { form.querySelector('#unlock-error').textContent = 'Patiente quelques instants avant de réessayer.'; return; }
+    const button = form.querySelector('button'); button.disabled = true;
+    try {
+      if (!await verifyPin(form.elements.pin.value, user.$id, pinRecord())) {
+        pinFailures++;
+        if (pinFailures >= 5) { retryAt = Date.now() + 30_000; pinFailures = 0; }
+        form.querySelector('#unlock-error').textContent = 'Code incorrect.';
+        form.elements.pin.value = '';
+        return;
+      }
+      pinFailures = 0;
+      await loadBudget();
+    } catch (error) { form.querySelector('#unlock-error').textContent = error.message; }
+    finally { button.disabled = false; }
+  };
+  document.querySelector('#email-login').onclick = async () => {
+    try { await signOut(); user = null; data = seed(); locked = false; render(); }
+    catch (error) { document.querySelector('#unlock-error').textContent = error.message; }
+  };
 }
 
 function expenseDialog() {
@@ -136,6 +184,7 @@ function expenseDialog() {
 
 function render() {
   if (!user) { login(); return; }
+  if (locked) { lockScreen(); return; }
   app.innerHTML = `<header><div class="brand"><span class="brand-icon">∿</span><div><small>PROJET CALYPÇO</small><h1>Mon budget</h1></div></div><button id="add-expense" class="primary">+ Dépense</button></header>
     <main><div class="month-nav"><button id="prev-month" aria-label="Mois précédent">‹</button><h2>${safe(prettyMonth(month))}</h2><button id="next-month" aria-label="Mois suivant">›</button></div>
     ${view === 'accueil' ? dashboard() : view === 'depenses' ? history() : view === 'previsions' ? forecasts() : settings()}</main>
@@ -234,22 +283,26 @@ function bind() {
   });
   document.querySelector('#sync-now')?.addEventListener('click', async () => { try { await pendingSync; data = await readBudget(user.$id); syncError = ''; render(); } catch (error) { syncError = error.message; render(); } });
   document.querySelector('#sign-out')?.addEventListener('click', async () => { try { await pendingSync; await signOut(); user = null; data = seed(); localStorage.removeItem(STORAGE); render(); } catch (error) { syncError = error.message; render(); } });
+  document.querySelector('#pin-form')?.addEventListener('submit', async event => {
+    event.preventDefault(); const form = event.currentTarget;
+    if (form.elements.pin.value !== form.elements.confirm.value) { form.querySelector('#pin-error').textContent = 'Les deux codes diffèrent.'; return; }
+    try { localStorage.setItem(pinKey(user.$id), JSON.stringify(await makePinRecord(form.elements.pin.value, user.$id))); render(); }
+    catch (error) { form.querySelector('#pin-error').textContent = error.message; }
+  });
+  document.querySelector('#remove-pin')?.addEventListener('click', () => { localStorage.removeItem(pinKey(user.$id)); render(); });
+  document.querySelector('#lock-now')?.addEventListener('click', lock);
   document.querySelector('#export-json')?.addEventListener('click', () => {
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = `calypco-budget-${today()}.json`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
-  });
-  document.querySelector('#import-json')?.addEventListener('change', async event => {
-    try {
-      const value = JSON.parse(await event.target.files[0].text());
-      if (value.version !== 1 || !value.budgets || !Array.isArray(value.expenses) || !Array.isArray(value.commitments) || !Array.isArray(value.incomes)) throw Error('Format de sauvegarde invalide.');
-      if (!confirm('Remplacer les données actuelles par cette sauvegarde ?')) return;
-      data = value; save(); render();
-    } catch (error) { alert(error.message); }
   });
 }
 
 login();
 initialize().catch(() => login());
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') hiddenAt = Date.now();
+  else if (hiddenAt && Date.now() - hiddenAt > 60_000) lock();
+});
 if ('serviceWorker' in navigator) navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`).catch(() => {});
 setInterval(() => {
   if (!user || !data.settings.notifications || document.visibilityState !== 'visible') return;
