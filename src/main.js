@@ -87,9 +87,28 @@ function settings() {
   return `<section class="panel"><h2>Rappels sur téléphone</h2><p class="note">Trois rappels par jour, aux heures locales choisies, lorsque l’application est ouverte. Pour recevoir des alertes quand elle est fermée, il faut encore configurer un service push.</p>
     <label class="check"><input id="notifications" type="checkbox" ${data.settings.notifications ? 'checked' : ''}/> Activer les notifications</label>
     ${Object.entries(times).map(([slot, value]) => `<label>${safe(slot[0].toUpperCase() + slot.slice(1))} <input type="time" data-reminder="${slot}" value="${safe(value)}" /></label>`).join('')}</section>
-    <section class="panel"><h2>Accès sur ce téléphone</h2><p class="note">Le code PIN déverrouille seulement cet appareil tant que la session Appwrite existe. Il ne remplace pas ton mot de passe. Choisis un code de 6 chiffres que tu n’as jamais partagé.</p>
-      ${hasPin ? '<p>Code PIN activé sur cet appareil.</p><div class="actions"><button id="lock-now">Verrouiller maintenant</button><button id="remove-pin">Retirer le code PIN</button></div>' : '<form id="pin-form"><label>Nouveau code PIN <input name="pin" type="password" inputmode="numeric" autocomplete="new-password" pattern="[0-9]{6}" maxlength="6" required /></label><label>Confirmer le code <input name="confirm" type="password" inputmode="numeric" autocomplete="new-password" pattern="[0-9]{6}" maxlength="6" required /></label><p id="pin-error" class="error" role="alert"></p><button type="submit">Activer le code PIN</button></form>'}</section>
-    <section class="panel"><h2>Compte et sauvegarde</h2><p class="note">Connecté : ${safe(user?.email)}. Les modifications se synchronisent avec Appwrite. ${syncError ? `Erreur de synchronisation : ${safe(syncError)}` : ''}</p><div class="actions"><button id="sync-now">Synchroniser</button><button id="sign-out">Déconnexion</button><button id="export-json">Exporter une sauvegarde</button></div></section>`;
+    <section class="panel"><h2>Code d’accès</h2><p class="note">Le PIN verrouille l’affichage sur cet appareil tant que la session Appwrite reste active. Choisis un code privé, jamais communiqué. Une nouvelle connexion est nécessaire si la session expire ou si tu changes d’appareil.</p>
+      ${hasPin ? '<p>Code PIN activé sur cet appareil.</p><div class="actions"><button id="lock-now">Verrouiller maintenant</button><button id="change-pin">Changer le code PIN</button></div>' : ''}</section>
+    <section class="panel"><h2>Compte et sauvegarde</h2><p class="note">Connecté : ${safe(user?.email)}. Les modifications se synchronisent avec Appwrite. ${syncError ? `Erreur de synchronisation : ${safe(syncError)}` : ''}</p><div class="actions"><button id="sync-now">Synchroniser</button><button id="sign-out">Déconnexion</button><button id="export-json">Exporter une sauvegarde</button></div><details><summary>Changer de compte sur cet appareil</summary><p class="note">Cette action ferme la session Appwrite. La prochaine connexion demandera l’adresse e-mail et le mot de passe.</p><button id="switch-account">Fermer la session Appwrite</button></details></section>`;
+}
+
+function pinSetup() {
+  app.innerHTML = `<header><div class="brand"><span class="brand-icon">∿</span><div><small>PROJET CALYPÇO</small><h1>Mon budget</h1></div></div></header><main><section class="panel login"><h2>Créer ton code d’accès</h2><p class="note">Choisis sur cet appareil un nouveau code PIN de 6 chiffres. Le code envoyé dans la conversation est déjà connu et ne peut pas protéger tes données. Tu saisiras ce nouveau code à chaque ouverture et après « Déconnexion ».</p><form id="pin-setup-form"><label>Nouveau code PIN <input name="pin" type="password" inputmode="numeric" autocomplete="new-password" pattern="[0-9]{6}" maxlength="6" required autofocus /></label><label>Confirmer le code <input name="confirm" type="password" inputmode="numeric" autocomplete="new-password" pattern="[0-9]{6}" maxlength="6" required /></label><p id="pin-error" class="error" role="alert"></p><button type="submit">Activer le code PIN</button></form><p><button id="setup-other-account" type="button">Utiliser un autre compte</button></p></section></main>`;
+  document.querySelector('#pin-setup-form').onsubmit = async event => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    if (form.elements.pin.value !== form.elements.confirm.value) { form.querySelector('#pin-error').textContent = 'Les deux codes diffèrent.'; return; }
+    const button = form.querySelector('button[type="submit"]'); button.disabled = true;
+    try {
+      localStorage.setItem(pinKey(user.$id), JSON.stringify(await makePinRecord(form.elements.pin.value, user.$id)));
+      form.reset();
+      await loadBudget();
+    } catch (error) { form.querySelector('#pin-error').textContent = error.message; button.disabled = false; }
+  };
+  document.querySelector('#setup-other-account').onclick = async () => {
+    try { await signOut(); user = null; data = seed(); render(); }
+    catch (error) { document.querySelector('#pin-error').textContent = error.message; }
+  };
 }
 
 function login() {
@@ -123,7 +142,8 @@ async function loadBudget() {
 
 async function initialize(justSignedIn = false) {
   user = await currentUser();
-  if (pinRecord() && !justSignedIn) { lock(); return; }
+  if (!pinRecord()) { pinSetup(); return; }
+  if (!justSignedIn) { lock(); return; }
   await loadBudget();
 }
 
@@ -185,6 +205,7 @@ function expenseDialog() {
 
 function render() {
   if (!user) { login(); return; }
+  if (!pinRecord()) { pinSetup(); return; }
   if (locked) { lockScreen(); return; }
   if (view === 'previsions') expandedBlocks = new Set([...document.querySelectorAll('[data-block-details][open]')].map(item => item.dataset.blockDetails));
   app.innerHTML = `<header><div class="brand"><span class="brand-icon">∿</span><div><small>PROJET CALYPÇO</small><h1>Mon budget</h1></div></div><button id="add-expense" class="primary">+ Dépense</button></header>
@@ -310,14 +331,9 @@ function bind() {
     data.settings.reminderTimes = { matin: '08:00', midi: '12:30', soir: '20:00', ...data.settings.reminderTimes, [input.dataset.reminder]: input.value }; save();
   });
   document.querySelector('#sync-now')?.addEventListener('click', async () => { try { await pendingSync; data = await readBudget(user.$id); syncError = ''; render(); } catch (error) { syncError = error.message; render(); } });
-  document.querySelector('#sign-out')?.addEventListener('click', async () => { try { await pendingSync; await signOut(); user = null; data = seed(); localStorage.removeItem(STORAGE); render(); } catch (error) { syncError = error.message; render(); } });
-  document.querySelector('#pin-form')?.addEventListener('submit', async event => {
-    event.preventDefault(); const form = event.currentTarget;
-    if (form.elements.pin.value !== form.elements.confirm.value) { form.querySelector('#pin-error').textContent = 'Les deux codes diffèrent.'; return; }
-    try { localStorage.setItem(pinKey(user.$id), JSON.stringify(await makePinRecord(form.elements.pin.value, user.$id))); render(); }
-    catch (error) { form.querySelector('#pin-error').textContent = error.message; }
-  });
-  document.querySelector('#remove-pin')?.addEventListener('click', () => { localStorage.removeItem(pinKey(user.$id)); render(); });
+  document.querySelector('#sign-out')?.addEventListener('click', async () => { try { await pendingSync; lock(); } catch (error) { syncError = error.message; render(); } });
+  document.querySelector('#switch-account')?.addEventListener('click', async () => { try { await pendingSync; await signOut(); user = null; data = seed(); localStorage.removeItem(STORAGE); render(); } catch (error) { syncError = error.message; render(); } });
+  document.querySelector('#change-pin')?.addEventListener('click', () => { localStorage.removeItem(pinKey(user.$id)); data = seed(); pinSetup(); });
   document.querySelector('#lock-now')?.addEventListener('click', lock);
   document.querySelector('#export-json')?.addEventListener('click', () => {
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
@@ -325,7 +341,7 @@ function bind() {
   });
 }
 
-login();
+app.innerHTML = '<main><section class="panel login"><h2>Ouverture de Calypço Budget…</h2></section></main>';
 initialize().catch(() => login());
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') hiddenAt = Date.now();
