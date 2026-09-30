@@ -67,11 +67,17 @@ export function monthlySavings(data, month) {
   return s.projected + s.projectCost;
 }
 
+export function forecastSavings(data, month) {
+  const s = snapshot(data, month);
+  // An Uber target belongs in the forecast, but only logged gains belong in the available balance.
+  return s.projected + s.projectCost + Math.max(0, s.uberTarget - s.uberActual);
+}
+
 export function externalForMonth(data, month) {
   return sum((data.externalFunding ?? []).filter(entry => entry.month === month).map(entry => entry.cents));
 }
 
-export function ganttTimeline(data) {
+export function ganttTimeline(data, { forecastUber = false } = {}) {
   const blocks = [...(data.ganttBlocks ?? []), ...(data.ganttFundingEvents ?? [])];
   const projectExpenses = data.expenses.filter(expense => expense.scope === 'Calypço');
   const events = blocks.map((block, index) => {
@@ -79,7 +85,8 @@ export function ganttTimeline(data) {
     const lineOverruns = sum((block.items ?? []).map(item => Math.max(0,
       sum(linked.filter(expense => expense.ganttLineId === item.id).map(expense => expense.cents)) - item.plannedCents)));
     const extra = sum(linked.filter(expense => !expense.ganttLineId || !(block.items ?? []).some(item => item.id === expense.ganttLineId)).map(expense => expense.cents));
-    const inflow = sum((block.fundingMonths ?? []).map(month => monthlySavings(data, month) + externalForMonth(data, month))) + (block.manualFundingCents ?? 0);
+    const inflow = sum((block.fundingMonths ?? []).map(month =>
+      (forecastUber ? forecastSavings(data, month) : monthlySavings(data, month)) + externalForMonth(data, month))) + (block.manualFundingCents ?? 0);
     return { ...block, order: block.orderHint ?? index, inflow, cost: block.plannedCents + lineOverruns + extra,
       actual: sum(linked.map(expense => expense.cents)), overrun: lineOverruns + extra };
   });
@@ -151,16 +158,19 @@ export function monthlyTable(data) {
   const events = ganttTimeline(data);
   const months = [...new Set([...Object.keys(data.budgets), ...events.map(event => event.month),
     ...(data.externalFunding ?? []).map(entry => entry.month)])].sort();
-  let savingsCumulative = 0, fundingCumulative = 0, spentCumulative = 0, operatingCumulative = 0;
+  let savingsCumulative = 0, forecastSavingsCumulative = 0, fundingCumulative = 0, spentCumulative = 0, operatingCumulative = 0;
   return months.map(month => {
     const savings = monthlySavings(data, month);
+    const forecast = forecastSavings(data, month);
     const funding = externalForMonth(data, month);
     const operating = sum(events.filter(event => event.month === month).map(event => event.manualFundingCents ?? 0));
     const spent = sum(events.filter(event => event.month === month).map(event => event.cost));
-    savingsCumulative += savings; fundingCumulative += funding; spentCumulative += spent; operatingCumulative += operating;
-    return { month, savings, funding, spent, savingsCumulative,
+    savingsCumulative += savings; forecastSavingsCumulative += forecast; fundingCumulative += funding; spentCumulative += spent; operatingCumulative += operating;
+    return { month, savings, forecastSavings: forecast, funding, spent, savingsCumulative, forecastSavingsCumulative,
       totalCumulative: savingsCumulative + fundingCumulative,
-      projectBalance: savingsCumulative + fundingCumulative + operatingCumulative - spentCumulative };
+      forecastTotalCumulative: forecastSavingsCumulative + fundingCumulative,
+      projectBalance: savingsCumulative + fundingCumulative + operatingCumulative - spentCumulative,
+      forecastProjectBalance: forecastSavingsCumulative + fundingCumulative + operatingCumulative - spentCumulative };
   });
 }
 
