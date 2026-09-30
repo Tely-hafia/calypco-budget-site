@@ -46,7 +46,7 @@ export function snapshot(data, month) {
   // A planned payment replaces its reservation. Any excess or unlinked project payment adds to it.
   const projectCost = reservedProject + realizedProject - linkedPaid;
   const extraIncome = sum(data.incomes.filter(x => monthKey(x.date) === month).map(x => x.cents));
-  const target = budget.target ?? (budget.income == null ? 0 : budget.income - plannedPersonal);
+  const target = budget.income == null ? (budget.target ?? 0) : budget.income - plannedPersonal;
   const projected = target + extraIncome - excessPersonal - personalReservation - projectCost;
   return {
     budget, categoryRows, commitments, personal, project, plannedPersonal, spentPersonal,
@@ -54,6 +54,56 @@ export function snapshot(data, month) {
     delta: projected - target,
     monthHasFullBudget: budget.income != null && Object.keys(budget.categories).length > 0
   };
+}
+
+export function monthlySavings(data, month) {
+  const s = snapshot(data, month);
+  return s.target + s.extraIncome - s.excessPersonal - s.personalReservation;
+}
+
+export function externalForMonth(data, month) {
+  return sum((data.externalFunding ?? []).filter(entry => entry.month === month).map(entry => entry.cents));
+}
+
+export function ganttTimeline(data) {
+  const blocks = data.ganttBlocks ?? [];
+  const projectExpenses = data.expenses.filter(expense => expense.scope === 'Calypço');
+  const events = blocks.map((block, index) => {
+    const linked = projectExpenses.filter(expense => expense.ganttBlockId === block.id);
+    const lineOverruns = sum((block.items ?? []).map(item => Math.max(0,
+      sum(linked.filter(expense => expense.ganttLineId === item.id).map(expense => expense.cents)) - item.plannedCents)));
+    const extra = sum(linked.filter(expense => !expense.ganttLineId || !(block.items ?? []).some(item => item.id === expense.ganttLineId)).map(expense => expense.cents));
+    const inflow = sum((block.fundingMonths ?? []).map(month => monthlySavings(data, month) + externalForMonth(data, month))) + (block.manualFundingCents ?? 0);
+    return { ...block, order: index, inflow, cost: block.plannedCents + lineOverruns + extra,
+      actual: sum(linked.map(expense => expense.cents)), overrun: lineOverruns + extra };
+  });
+  const unassigned = projectExpenses.filter(expense => !blocks.some(block => block.id === expense.ganttBlockId));
+  for (const month of [...new Set(unassigned.map(expense => monthKey(expense.date)))]) {
+    const cost = sum(unassigned.filter(expense => monthKey(expense.date) === month).map(expense => expense.cents));
+    events.push({ id: `extra-${month}`, month, label: 'Autres dépenses Calypço', phase: month,
+      note: 'Dépenses non rattachées à un bloc', plannedCents: 0, items: [], inflow: 0,
+      actual: cost, overrun: cost, cost, order: blocks.length });
+  }
+  events.sort((a, b) => a.month.localeCompare(b.month) || a.order - b.order);
+  let balance = 0;
+  return events.map(event => ({ ...event, balance: balance += event.inflow - event.cost }));
+}
+
+export function monthlyTable(data) {
+  const events = ganttTimeline(data);
+  const months = [...new Set([...Object.keys(data.budgets), ...events.map(event => event.month),
+    ...(data.externalFunding ?? []).map(entry => entry.month)])].sort();
+  let savingsCumulative = 0, fundingCumulative = 0, spentCumulative = 0, operatingCumulative = 0;
+  return months.map(month => {
+    const savings = monthlySavings(data, month);
+    const funding = externalForMonth(data, month);
+    const operating = sum(events.filter(event => event.month === month).map(event => event.manualFundingCents ?? 0));
+    const spent = sum(events.filter(event => event.month === month).map(event => event.cost));
+    savingsCumulative += savings; fundingCumulative += funding; spentCumulative += spent; operatingCumulative += operating;
+    return { month, savings, funding, spent, savingsCumulative,
+      totalCumulative: savingsCumulative + fundingCumulative,
+      projectBalance: savingsCumulative + fundingCumulative + operatingCumulative - spentCumulative };
+  });
 }
 
 export function addExpense(data, input) {
@@ -73,7 +123,9 @@ export function addExpense(data, input) {
     scope: input.scope, category: input.category, cents: part.cents
   })));
   const expense = { id: uid(), date, scope: input.scope, category: input.category,
-    description: input.description || '', method: input.method || '', cents: first.cents, commitmentId };
+    description: input.description || '', method: input.method || '', cents: first.cents, commitmentId,
+    ganttBlockId: input.scope === 'Calypço' ? (input.ganttBlockId || null) : null,
+    ganttLineId: input.scope === 'Calypço' ? (input.ganttLineId || null) : null };
   data.expenses.push(expense);
   return expense;
 }

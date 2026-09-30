@@ -1,6 +1,6 @@
 import './style.css';
 import { currentUser, signIn, signUp, signOut, readBudget, writeBudget } from './cloud.js';
-import { addExpense, money, monthKey, seed, snapshot, uid } from './budget.js';
+import { addExpense, externalForMonth, ganttTimeline, money, monthKey, monthlySavings, monthlyTable, seed, snapshot, uid } from './budget.js';
 
 const STORAGE = 'calypco-budget-v2';
 const projectCategories = ['Voyage Guinée', 'Piscine', 'Toboggan', 'Plateforme', 'Plomberie', 'Électricité', 'Carrelage', 'Main-d’œuvre', 'Transport', 'Matériaux', 'Administratif', 'Autres travaux'];
@@ -21,30 +21,35 @@ let pendingSync = Promise.resolve();
 let month = monthKey(today()) < '2026-10' ? '2026-10' : monthKey(today());
 let view = 'accueil';
 let dialog = false;
+let selectedBlock = '';
 const app = document.querySelector('#app');
 const save = () => {
   localStorage.setItem(STORAGE, JSON.stringify(data));
   if (!user) return;
   const copy = structuredClone(data);
-  pendingSync = pendingSync.catch(() => {}).then(() => writeBudget(user.$id, copy)).then(() => { syncError = ''; render(); }).catch(error => { syncError = error.message; render(); });
+  pendingSync = pendingSync.catch(() => {}).then(() => writeBudget(user.$id, copy)).then(() => { syncError = ''; }).catch(error => { syncError = error.message; render(); });
 };
 const line = (label, value, className = '') => `<div class="line ${className}"><span>${safe(label)}</span><strong>${money(value)}</strong></div>`;
 
 function dashboard() {
   const s = snapshot(data, month);
-  const tone = s.projected < 0 ? 'danger' : s.projected < 5000 ? 'critical' : s.projected < 10000 ? 'warning' : 'good';
-  const categories = s.categoryRows.map(row => `<div class="category-row"><div><strong>${safe(row.name)}</strong><small>Prévu ${money(row.planned)} · Dépensé ${money(row.spent)}</small></div><b class="${row.spent > row.planned ? 'negative' : ''}">${money(row.planned - row.spent)}</b></div>`).join('');
-  const commitments = s.commitments.map(c => {
-    const paid = data.expenses.filter(x => x.commitmentId === c.id).reduce((n, x) => n + x.cents, 0);
-    return `<div class="category-row"><div><strong>${safe(c.label)}</strong><small>${safe(c.scope)} · ${paid >= c.cents ? 'Payé' : `À payer ${money(c.cents - paid)}`}</small></div><b>${money(c.cents)}</b></div>`;
-  }).join('');
-  return `<section class="hero ${tone}"><div class="eyebrow">ÉPARGNE CALYPÇO PROJETÉE</div><div class="big">${money(s.projected)}</div><div class="hero-foot"><span>Objectif initial ${money(s.target)}</span><span>Écart ${s.delta >= 0 ? '+' : ''}${money(s.delta)}</span></div></section>
-    <div class="summary-grid"><article><small>Prévu personnel</small><b>${money(s.plannedPersonal)}</b></article><article><small>Dépensé réel</small><b>${money(s.spentPersonal)}</b></article><article><small>Reste autorisé</small><b>${money(s.plannedPersonal - s.spentPersonal)}</b></article></div>
-    <section class="panel"><h2>Impact sur Calypço</h2>${line('Économie initiale', s.target)}${line('Engagements du projet', -s.projectCost)}${line('Dépassement personnel', -s.excessPersonal - s.personalReservation)}${line('Revenus supplémentaires', s.extraIncome)}${line('Économie projetée', s.projected, 'total')}
-      <p class="note">Une dépense déjà comprise dans son poste ne réduit pas une deuxième fois l’épargne. Les engagements du projet déjà payés restent comptés une seule fois.</p></section>
-    ${!s.monthHasFullBudget ? '<p class="notice">Prévision provisoire : détail des revenus et postes personnels à renseigner pour ce mois.</p>' : ''}
-    <section class="panel"><h2>Postes personnels</h2>${categories || '<p class="muted">Aucun poste détaillé pour ce mois.</p>'}</section>
-    <section class="panel"><h2>Échéances prévues</h2>${commitments || '<p class="muted">Aucune échéance prévue.</p>'}</section>`;
+  const savings = monthlySavings(data, month);
+  const row = monthlyTable(data).find(item => item.month === month);
+  const tone = savings < 0 ? 'danger' : savings < 5000 ? 'critical' : savings < 10000 ? 'warning' : 'good';
+  const categories = s.categoryRows.map(item => `<div class="category-row"><div><strong>${safe(item.name)}</strong><small>Prévu ${money(item.planned)} · Dépensé ${money(item.spent)}</small></div><b class="${item.spent > item.planned ? 'negative' : ''}">${money(item.planned - item.spent)}</b></div>`).join('');
+  const budget = data.budgets[month] ?? { income: 0, categories: {} };
+  return `<section class="hero ${tone}"><div class="eyebrow">ÉCONOMIE MENSUELLE PRÉVUE</div><div class="big">${money(savings)}</div><div class="hero-foot"><span>Budget initial ${money(s.target)}</span><span>Variation ${savings - s.target >= 0 ? '+' : ''}${money(savings - s.target)}</span></div></section>
+    <div class="summary-grid"><article><small>Prévu dépenses</small><b>${money(s.plannedPersonal)}</b></article><article><small>Dépensé réel</small><b>${money(s.spentPersonal)}</b></article><article><small>Reste sur postes</small><b>${money(s.plannedPersonal - s.spentPersonal)}</b></article></div>
+    <div class="summary-grid"><article><small>Économies cumulées</small><b>${money(row?.savingsCumulative ?? 0)}</b></article><article><small>Financement cumulé</small><b>${money(row?.totalCumulative ?? 0)}</b></article><article><small>Après Gantt</small><b class="${(row?.projectBalance ?? 0) < 0 ? 'negative' : ''}">${money(row?.projectBalance ?? 0)}</b></article></div>
+    ${!Object.keys(data.budgets).length ? '<p class="notice">Budget vide : importe le plan Calypço dans Réglages, ou renseigne tes prévisions ci-dessous.</p>' : ''}
+    <section class="panel"><h2>Ce mois en détail</h2>${line('Revenus prévus', budget.income ?? 0)}${line('Dépenses prévues', -s.plannedPersonal)}${line('Dépassements et imprévus', -s.excessPersonal - s.personalReservation)}${line('Revenus ajoutés', s.extraIncome)}${line('Économie du mois', savings, 'total')}
+      <p class="note">Une dépense comprise dans un poste prévu fait baisser son reste disponible. Elle change l’économie prévue si elle dépasse ce poste ou correspond à une nouvelle dépense.</p></section>
+    <section class="panel"><h2>Postes personnels</h2>${categories || '<p class="muted">Aucun poste prévu pour ce mois.</p>'}</section>
+    <section class="panel"><h2>Modifier les prévisions de ${safe(prettyMonth(month))}</h2><form id="budget-form">
+      <label>Revenus prévus (€) <input name="income" type="number" step="0.01" min="0" value="${((budget.income ?? 0)/100).toFixed(2)}" required /></label>
+      ${Object.entries(budget.categories ?? {}).map(([name, cents]) => `<label>${safe(name)} (€) <input data-category="${safe(name)}" type="number" step="0.01" min="0" value="${(cents/100).toFixed(2)}" required /></label>`).join('')}
+      <div class="inline-form"><input name="newCategory" placeholder="Nouveau poste" aria-label="Nouveau poste" /><input name="newAmount" type="number" step="0.01" min="0" placeholder="Montant €" aria-label="Montant du nouveau poste" /></div>
+      <button type="submit">Mettre à jour le budget</button></form></section>`;
 }
 
 function history() {
@@ -55,12 +60,17 @@ function history() {
 }
 
 function forecasts() {
-  let cumulative = 0;
-  const months = Array.from({ length: 8 }, (_, index) => changeMonth(month, index));
-  return `<section class="panel"><h2>Prévisions et Gantt</h2><p class="note">L’écart cumulé indique l’effet des nouvelles dépenses sur le financement initial de Calypço. Il ne remplace pas le Gantt détaillé des travaux.</p><div class="forecast-head"><span>Mois</span><span>Économie</span><span>Écart cumulé</span></div>${months.map(key => {
-    const s = snapshot(data, key); cumulative += s.delta;
-    return `<div class="forecast-row"><span>${safe(prettyMonth(key))}${!s.monthHasFullBudget ? '<small>prévision partielle</small>' : ''}</span><b>${money(s.projected)}</b><b class="${cumulative < 0 ? 'negative' : ''}">${money(cumulative)}</b></div>`;
-  }).join('')}</section>`;
+  const table = monthlyTable(data);
+  const gantt = ganttTimeline(data);
+  return `<section class="panel"><h2>Prévisions mois par mois</h2><p class="note">Économie du mois = revenus prévus − dépenses prévues, ajustée par les dépassements et revenus saisis. Le total cumulé ajoute les apports externes. Le solde du projet déduit les blocs du Gantt.</p>
+    <div class="table-scroll"><table class="budget-table"><thead><tr><th>Mois</th><th>Économie</th><th>Cumul perso</th><th>Apports</th><th>Total cumulé</th><th>Solde projet</th></tr></thead><tbody>
+    ${table.map(row => `<tr class="${row.month === month ? 'selected' : ''}"><th><button data-month="${row.month}">${safe(prettyMonth(row.month))}</button></th><td>${money(row.savings)}</td><td>${money(row.savingsCumulative)}</td><td>${money(row.funding)}</td><td>${money(row.totalCumulative)}</td><td class="${row.projectBalance < 0 ? 'negative' : ''}">${money(row.projectBalance)}</td></tr>`).join('')}</tbody></table></div></section>
+    <section class="panel"><h2>Gantt lié au cumul</h2><p class="note">Chaque bloc reçoit les économies et apports indiqués, puis déduit son coût prévu et les dépenses supplémentaires. Ouvre un bloc pour voir ses lignes et les montants déjà saisis.</p>
+    ${gantt.length ? gantt.map(block => `<details class="gantt-block"><summary><span><small>${safe(block.phase || prettyMonth(block.month))}</small><strong>${safe(block.label)}</strong></span><span class="gantt-values"><b class="${block.balance < 0 ? 'negative' : ''}">${money(block.balance)}</b><small>+ ${money(block.inflow)} · − ${money(block.cost)}</small></span></summary>
+      ${block.note ? `<p class="note">${safe(block.note)}</p>` : ''}<div class="line"><span>Coût prévu</span><strong>${money(block.plannedCents)}</strong></div><div class="line"><span>Dépenses saisies</span><strong>${money(block.actual)}</strong></div>${block.overrun ? line('En plus du prévu', block.overrun) : ''}
+      ${(block.items ?? []).map(item => { const paid = data.expenses.filter(x => x.ganttLineId === item.id).reduce((n, x) => n + x.cents, 0); return `<div class="gantt-item"><span>${safe(item.label)}${item.note ? `<small>${safe(item.note)}</small>` : ''}</span><span>${money(item.plannedCents)}<small>Saisi ${money(paid)}</small></span></div>`; }).join('')}
+      <button type="button" data-add-block-expense="${safe(block.id)}">+ Dépense pour ce bloc</button></details>`).join('') : '<p class="muted">Aucun bloc : importe ton plan dans Réglages.</p>'}
+    <form id="block-form" class="stack-form"><h3>Ajouter un bloc au Gantt</h3><label>Mois <input name="month" type="month" value="${month}" required /></label><label>Nom du bloc <input name="label" required maxlength="120" /></label><label>Coût prévu (€) <input name="amount" type="number" min="0" step="0.01" required /></label><button type="submit">Ajouter le bloc</button></form></section>`;
 }
 
 function settings() {
@@ -68,7 +78,7 @@ function settings() {
   return `<section class="panel"><h2>Rappels sur téléphone</h2><p class="note">Trois rappels par jour, aux heures locales choisies, lorsque l’application est ouverte. Pour recevoir des alertes quand elle est fermée, il faut encore configurer un service push.</p>
     <label class="check"><input id="notifications" type="checkbox" ${data.settings.notifications ? 'checked' : ''}/> Activer les notifications</label>
     ${Object.entries(times).map(([slot, value]) => `<label>${safe(slot[0].toUpperCase() + slot.slice(1))} <input type="time" data-reminder="${slot}" value="${safe(value)}" /></label>`).join('')}</section>
-    <section class="panel"><h2>Compte et sauvegarde</h2><p class="note">Connecté : ${safe(user?.email)}. Les modifications se synchronisent avec Appwrite. ${syncError ? `Erreur de synchronisation : ${safe(syncError)}` : ''}</p><div class="actions"><button id="sync-now">Synchroniser</button><button id="sign-out">Déconnexion</button><button id="export-json">Exporter JSON</button><label class="file-label">Importer JSON<input id="import-json" type="file" accept="application/json,.json" hidden /></label></div></section>`;
+    <section class="panel"><h2>Compte et sauvegarde</h2><p class="note">Connecté : ${safe(user?.email)}. Les modifications se synchronisent avec Appwrite. ${syncError ? `Erreur de synchronisation : ${safe(syncError)}` : ''}</p><div class="actions"><button id="sync-now">Synchroniser</button><button id="sign-out">Déconnexion</button><button id="export-json">Exporter JSON</button><label class="file-label">Importer le plan / JSON<input id="import-json" type="file" accept="application/json,.json" hidden /></label></div></section>`;
 }
 
 function login() {
@@ -107,15 +117,19 @@ function expenseDialog() {
   const s = snapshot(data, month);
   const categories = Object.keys(s.budget.categories);
   const options = s.commitments.map(c => `<option value="${safe(c.id)}" data-scope="${safe(c.scope)}">${safe(c.label)} — ${money(c.cents)}</option>`).join('');
+  const blocks = data.ganttBlocks ?? [];
+  const currentBlock = blocks.find(block => block.id === selectedBlock);
   return `<div class="modal-backdrop"><form id="expense-form" class="modal"><div class="modal-top"><h2>Ajouter une dépense</h2><button type="button" id="close-modal" class="icon-button" aria-label="Fermer">×</button></div>
     <label>Montant total (€) <input name="amount" type="number" min="0.01" step="0.01" required autofocus /></label>
     <label>Date de la première échéance <input name="date" type="date" value="${month === monthKey(today()) ? today() : `${month}-01`}" required /></label>
-    <label>Budget <select name="scope" id="expense-scope"><option>Personnel</option><option>Calypço</option></select></label>
+    <label>Budget <select name="scope" id="expense-scope"><option ${currentBlock ? "" : "selected"}>Personnel</option><option ${currentBlock ? "selected" : ""}>Calypço</option></select></label>
     <label>Catégorie <select name="category" id="expense-category">${categories.map(c => `<option>${safe(c)}</option>`).join('')}<option>Autre dépense personnelle</option></select></label>
     <label>Description (facultatif) <input name="description" maxlength="120" /></label>
     <label>Moyen de paiement (facultatif) <input name="method" maxlength="60" /></label>
     <label>Paiement en <select name="count"><option value="1">Une fois</option><option value="2">2 fois</option><option value="3">3 fois</option><option value="4">4 fois</option><option value="6">6 fois</option><option value="12">12 fois</option></select></label>
     <label>Échéance déjà prévue (si applicable) <select name="commitmentId"><option value="">Nouvelle dépense</option>${options}</select></label>
+    <div id="gantt-link" ${currentBlock ? '' : 'hidden'}><label>Bloc du Gantt <select name="ganttBlockId" id="gantt-block"><option value="">Nouvelle dépense hors bloc</option>${blocks.map(block => `<option value="${safe(block.id)}" ${block.id === selectedBlock ? 'selected' : ''}>${safe(prettyMonth(block.month))} · ${safe(block.label)}</option>`).join('')}</select></label>
+    <label>Ligne prévue (facultatif) <select name="ganttLineId" id="gantt-line"><option value="">Dépense supplémentaire du bloc</option>${(currentBlock?.items ?? []).map(item => `<option value="${safe(item.id)}">${safe(item.label)} — prévu ${money(item.plannedCents)}</option>`).join('')}</select></label></div>
     <p class="note">Lier un paiement à une échéance prévue évite de le déduire deux fois. Pour un nouvel achat en plusieurs fois, les échéances futures sont créées automatiquement.</p>
     <p id="form-error" class="error" role="alert"></p><button class="primary" type="submit">Enregistrer la dépense</button></form></div>`;
 }
@@ -125,7 +139,7 @@ function render() {
   app.innerHTML = `<header><div class="brand"><span class="brand-icon">∿</span><div><small>PROJET CALYPÇO</small><h1>Mon budget</h1></div></div><button id="add-expense" class="primary">+ Dépense</button></header>
     <main><div class="month-nav"><button id="prev-month" aria-label="Mois précédent">‹</button><h2>${safe(prettyMonth(month))}</h2><button id="next-month" aria-label="Mois suivant">›</button></div>
     ${view === 'accueil' ? dashboard() : view === 'depenses' ? history() : view === 'previsions' ? forecasts() : settings()}</main>
-    <nav aria-label="Navigation principale">${[['accueil', 'Accueil'], ['depenses', 'Dépenses'], ['previsions', 'Prévisions'], ['reglages', 'Réglages']].map(([id, label]) => `<button data-view="${id}" class="${view === id ? 'active' : ''}">${label}</button>`).join('')}</nav>${expenseDialog()}`;
+    <nav aria-label="Navigation principale">${[['accueil', 'Accueil'], ['depenses', 'Dépenses'], ['previsions', 'Gantt'], ['reglages', 'Réglages']].map(([id, label]) => `<button data-view="${id}" class="${view === id ? 'active' : ''}">${label}</button>`).join('')}</nav>${expenseDialog()}`;
   bind();
 }
 
@@ -136,25 +150,29 @@ function announce(message) {
 function bind() {
   document.querySelector('#prev-month').onclick = () => { month = changeMonth(month, -1); render(); };
   document.querySelector('#next-month').onclick = () => { month = changeMonth(month, 1); render(); };
-  document.querySelector('#add-expense').onclick = () => { dialog = true; render(); };
+  document.querySelector('#add-expense').onclick = () => { selectedBlock = ''; dialog = true; render(); };
   document.querySelectorAll('[data-view]').forEach(button => button.onclick = () => { view = button.dataset.view; render(); });
-  document.querySelector('#close-modal')?.addEventListener('click', () => { dialog = false; render(); });
-  document.querySelector('.modal-backdrop')?.addEventListener('click', event => { if (event.target.classList.contains('modal-backdrop')) { dialog = false; render(); } });
+  document.querySelector('#close-modal')?.addEventListener('click', () => { dialog = false; selectedBlock = ''; render(); });
+  document.querySelector('.modal-backdrop')?.addEventListener('click', event => { if (event.target.classList.contains('modal-backdrop')) { dialog = false; selectedBlock = ''; render(); } });
   const form = document.querySelector('#expense-form');
   if (form) {
     const scope = form.querySelector('#expense-scope');
     const category = form.querySelector('#expense-category');
-    scope.onchange = () => { category.innerHTML = (scope.value === 'Calypço' ? projectCategories : [...Object.keys(snapshot(data, month).budget.categories), 'Autre dépense personnelle']).map(c => `<option>${safe(c)}</option>`).join(''); };
+    const blockSelect = form.querySelector('#gantt-block');
+    const lineSelect = form.querySelector('#gantt-line');
+    blockSelect.onchange = () => { const block = (data.ganttBlocks ?? []).find(item => item.id === blockSelect.value); lineSelect.innerHTML = '<option value="">Dépense supplémentaire du bloc</option>' + (block?.items ?? []).map(item => `<option value="${safe(item.id)}">${safe(item.label)} — prévu ${money(item.plannedCents)}</option>`).join(''); };
+    scope.onchange = () => { form.querySelector('#gantt-link').hidden = scope.value !== 'Calypço'; category.innerHTML = (scope.value === 'Calypço' ? projectCategories : [...Object.keys(snapshot(data, month).budget.categories), 'Autre dépense personnelle']).map(c => `<option>${safe(c)}</option>`).join(''); };
     form.onsubmit = event => {
       event.preventDefault();
       const values = Object.fromEntries(new FormData(form));
       try {
         const commitment = data.commitments.find(c => c.id === values.commitmentId);
         if (commitment && (commitment.scope !== values.scope || commitment.month !== monthKey(values.date) || Number(values.count) !== 1)) throw new Error('Choisis une échéance du même budget et du même mois, avec un paiement unique.');
-        const before = snapshot(data, monthKey(values.date)).projected;
-        addExpense(data, values); save(); dialog = false; month = monthKey(values.date); render();
-        const after = snapshot(data, month).projected;
-        announce(`Dépense enregistrée. Épargne Calypço projetée : ${money(after)}. Impact de cette saisie : ${money(after - before)}.`);
+        if (values.ganttLineId && !(data.ganttBlocks ?? []).find(b => b.id === values.ganttBlockId)?.items.some(item => item.id === values.ganttLineId)) throw new Error('La ligne choisie doit appartenir au bloc du Gantt.');
+        const before = monthlySavings(data, monthKey(values.date));
+        addExpense(data, values); save(); dialog = false; selectedBlock = ''; month = monthKey(values.date); render();
+        const after = monthlySavings(data, month);
+        announce(`Dépense enregistrée. Économie mensuelle prévue : ${money(after)}. Variation : ${money(after - before)}.`);
       } catch (error) { form.querySelector('#form-error').textContent = error.message; }
     };
   }
@@ -165,6 +183,39 @@ function bind() {
   document.querySelectorAll('[data-delete-income]').forEach(button => button.onclick = () => {
     data.incomes = data.incomes.filter(x => x.id !== button.dataset.deleteIncome); save(); render();
   });
+  document.querySelectorAll('[data-month]').forEach(button => button.onclick = () => { month = button.dataset.month; view = 'accueil'; render(); });
+  document.querySelectorAll('[data-add-block-expense]').forEach(button => button.onclick = () => { selectedBlock = button.dataset.addBlockExpense; month = (data.ganttBlocks ?? []).find(block => block.id === selectedBlock)?.month ?? month; dialog = true; render(); });
+  const budgetForm = document.querySelector('#budget-form');
+  if (budgetForm) budgetForm.onsubmit = event => {
+    event.preventDefault();
+    const cents = input => Math.round(Number(input) * 100);
+    const income = cents(budgetForm.elements.income.value);
+    if (!Number.isSafeInteger(income) || income < 0) return;
+    const categories = {};
+    for (const input of budgetForm.querySelectorAll('[data-category]')) {
+      const value = cents(input.value);
+      if (!Number.isSafeInteger(value) || value < 0) return;
+      categories[input.dataset.category] = value;
+    }
+    const name = budgetForm.elements.newCategory.value.trim();
+    if (name) {
+      const value = cents(budgetForm.elements.newAmount.value);
+      if (!Number.isSafeInteger(value) || value < 0) return;
+      categories[name] = value;
+    }
+    data.budgets[month] = { income, categories };
+    save(); render();
+  };
+  const blockForm = document.querySelector('#block-form');
+  if (blockForm) blockForm.onsubmit = event => {
+    event.preventDefault(); const values = Object.fromEntries(new FormData(blockForm));
+    const plannedCents = Math.round(Number(values.amount) * 100);
+    if (!Number.isSafeInteger(plannedCents) || plannedCents < 0) return;
+    data.ganttBlocks ??= [];
+    data.ganttBlocks.push({ id: uid(), month: values.month, phase: prettyMonth(values.month), label: values.label.trim(), plannedCents,
+      fundingMonths: [], manualFundingCents: 0, items: [], note: 'Bloc ajouté dans l’application.' });
+    save(); render();
+  };
   const income = document.querySelector('#income-form');
   if (income) income.onsubmit = event => {
     event.preventDefault(); const values = Object.fromEntries(new FormData(income)); const cents = Math.round(Number(values.amount) * 100);
