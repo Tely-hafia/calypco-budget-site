@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { addExpense, ganttTimeline, installments, monthlySavings, monthlyTable, seed } from './budget.js';
+import { addExpense, ganttTimeline, installments, monthlySavings, monthlyTable, removeGanttBlock, seed, updateGanttBlock, updateGanttLine } from './budget.js';
 
 const example = () => {
   const data = seed();
@@ -38,4 +38,23 @@ test('les centimes du dernier paiement préservent le montant total', () => {
   assert.deepEqual(installments(52000, 3, '2026-10'), [
     { month: '2026-10', cents: 17333 }, { month: '2026-11', cents: 17333 }, { month: '2026-12', cents: 17334 }
   ]);
+});
+
+test('le nouveau prix du ciment change le bloc et tous les soldes suivants', () => {
+  const data = example();
+  updateGanttLine(data, 'b1', 'l1', 35000);
+  assert.equal(data.ganttBlocks[0].plannedCents, 35000);
+  assert.equal(ganttTimeline(data)[0].cost, 35000);
+  assert.equal(ganttTimeline(data)[1].balance, 265000);
+});
+
+test('décaler ou retirer un bloc conserve ses apports à la date initiale', () => {
+  const data = example();
+  updateGanttBlock(data, 'b1', { month: '2026-12', label: 'Piscine reportée', plannedCents: 30000 });
+  assert.equal(ganttTimeline(data).find(x => x.month === '2026-10').inflow, 240000);
+  assert.equal(monthlyTable(data).find(x => x.month === '2026-10').projectBalance, 240000);
+  assert.equal(ganttTimeline(data).at(-1).balance, 270000);
+  removeGanttBlock(data, 'b1');
+  assert.equal(ganttTimeline(data).at(-1).balance, 300000);
+  assert.equal(monthlyTable(data).find(x => x.month === '2026-10').projectBalance, 240000);
 });

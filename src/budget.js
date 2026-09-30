@@ -66,7 +66,7 @@ export function externalForMonth(data, month) {
 }
 
 export function ganttTimeline(data) {
-  const blocks = data.ganttBlocks ?? [];
+  const blocks = [...(data.ganttBlocks ?? []), ...(data.ganttFundingEvents ?? [])];
   const projectExpenses = data.expenses.filter(expense => expense.scope === 'Calypço');
   const events = blocks.map((block, index) => {
     const linked = projectExpenses.filter(expense => expense.ganttBlockId === block.id);
@@ -74,19 +74,71 @@ export function ganttTimeline(data) {
       sum(linked.filter(expense => expense.ganttLineId === item.id).map(expense => expense.cents)) - item.plannedCents)));
     const extra = sum(linked.filter(expense => !expense.ganttLineId || !(block.items ?? []).some(item => item.id === expense.ganttLineId)).map(expense => expense.cents));
     const inflow = sum((block.fundingMonths ?? []).map(month => monthlySavings(data, month) + externalForMonth(data, month))) + (block.manualFundingCents ?? 0);
-    return { ...block, order: index, inflow, cost: block.plannedCents + lineOverruns + extra,
+    return { ...block, order: block.orderHint ?? index, inflow, cost: block.plannedCents + lineOverruns + extra,
       actual: sum(linked.map(expense => expense.cents)), overrun: lineOverruns + extra };
   });
   const unassigned = projectExpenses.filter(expense => !blocks.some(block => block.id === expense.ganttBlockId));
   for (const month of [...new Set(unassigned.map(expense => monthKey(expense.date)))]) {
     const cost = sum(unassigned.filter(expense => monthKey(expense.date) === month).map(expense => expense.cents));
-    events.push({ id: `extra-${month}`, month, label: 'Autres dépenses Calypço', phase: month,
+    events.push({ id: `extra-${month}`, kind: 'unassigned', month, label: 'Autres dépenses Calypço', phase: month,
       note: 'Dépenses non rattachées à un bloc', plannedCents: 0, items: [], inflow: 0,
       actual: cost, overrun: cost, cost, order: blocks.length });
   }
   events.sort((a, b) => a.month.localeCompare(b.month) || a.order - b.order);
   let balance = 0;
   return events.map(event => ({ ...event, balance: balance += event.inflow - event.cost }));
+}
+
+function assertCents(cents) {
+  if (!Number.isSafeInteger(cents) || cents < 0) throw new Error('Saisis un montant valide.');
+}
+
+export function updateGanttLine(data, blockId, lineId, plannedCents) {
+  assertCents(plannedCents);
+  const block = (data.ganttBlocks ?? []).find(entry => entry.id === blockId);
+  const item = block?.items?.find(entry => entry.id === lineId);
+  if (!item) throw new Error('Ligne du Gantt introuvable.');
+  const total = block.plannedCents + plannedCents - item.plannedCents;
+  assertCents(total);
+  block.plannedCents = total;
+  item.plannedCents = plannedCents;
+}
+
+function preserveFunding(data, block, orderHint) {
+  if (!(block.fundingMonths?.length || block.manualFundingCents)) return;
+  data.ganttFundingEvents ??= [];
+  data.ganttFundingEvents.push({ id: uid(), kind: 'funding', month: block.month,
+    phase: 'Financement conservé', label: `Apports de ${block.label}`,
+    note: 'Les économies et apports restent à leur date initiale.', plannedCents: 0, items: [],
+    fundingMonths: [...(block.fundingMonths ?? [])], manualFundingCents: block.manualFundingCents ?? 0,
+    orderHint });
+  block.fundingMonths = [];
+  block.manualFundingCents = 0;
+}
+
+export function updateGanttBlock(data, blockId, { month, label, plannedCents }) {
+  assertCents(plannedCents);
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month) || !label?.trim()) throw new Error('Mois ou nom du bloc invalide.');
+  const blocks = data.ganttBlocks ?? [];
+  const block = blocks.find(entry => entry.id === blockId);
+  if (!block) throw new Error('Bloc du Gantt introuvable.');
+  if (month !== block.month) preserveFunding(data, block, blocks.indexOf(block));
+  block.month = month;
+  block.phase = new Intl.DateTimeFormat('fr-FR', { month: 'short', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${month}-01T12:00:00Z`));
+  block.label = label.trim();
+  block.plannedCents = plannedCents;
+}
+
+export function removeGanttBlock(data, blockId) {
+  const blocks = data.ganttBlocks ?? [];
+  const index = blocks.findIndex(entry => entry.id === blockId);
+  if (index < 0) throw new Error('Bloc du Gantt introuvable.');
+  preserveFunding(data, blocks[index], index);
+  blocks.splice(index, 1);
+  for (const expense of data.expenses) if (expense.ganttBlockId === blockId) {
+    expense.ganttBlockId = null;
+    expense.ganttLineId = null;
+  }
 }
 
 export function monthlyTable(data) {
