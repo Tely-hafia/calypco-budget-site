@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { addExpense, ganttTimeline, installments, monthlySavings, monthlyTable, removeGanttBlock, seed, updateGanttBlock, updateGanttLine } from './budget.js';
+import { addExpense, ganttTimeline, installments, monthlySavings, monthlyTable, removeGanttBlock, seed, snapshot, updateGanttBlock, updateGanttLine } from './budget.js';
 
 const example = () => {
   const data = seed();
@@ -22,6 +22,27 @@ test('une dépense personnelle prévue entame le poste sans déduire deux fois l
   assert.equal(monthlySavings(data, '2026-10'), 187500);
   assert.equal(ganttTimeline(data)[0].balance, 207500);
   assert.equal(ganttTimeline(data)[1].balance, 267500);
+});
+
+test('Uber est compté à mesure des gains, avec impact immédiat sur le cumul et le Gantt', () => {
+  const data = example();
+  data.budgets['2026-10'] = { income: 120000, salaryCents: 100000, uberTargetCents: 20000, categories: { Nourriture: 10000 } };
+  assert.equal(snapshot(data, '2026-10').target, 110000);
+  assert.equal(monthlySavings(data, '2026-10'), 90000);
+  data.incomes.push({ id: 'u1', kind: 'uber', date: '2026-10-06', cents: 10000 });
+  data.incomes.push({ id: 'u2', kind: 'uber', date: '2026-10-13', cents: 10000 });
+  assert.equal(snapshot(data, '2026-10').uberActual, 20000);
+  assert.equal(monthlySavings(data, '2026-10'), 110000);
+  assert.equal(monthlyTable(data)[0].savingsCumulative, 110000);
+  assert.equal(ganttTimeline(data)[0].balance, 130000);
+  addExpense(data, { amount: '30', date: '2026-10-14', scope: 'Personnel', category: 'Nourriture' });
+  assert.equal(snapshot(data, '2026-10').categoryRows[0].planned - snapshot(data, '2026-10').categoryRows[0].spent, 7000);
+  assert.equal(monthlySavings(data, '2026-10'), 110000);
+  addExpense(data, { amount: '80', date: '2026-10-15', scope: 'Personnel', category: 'Nourriture' });
+  assert.equal(monthlySavings(data, '2026-10'), 109000);
+  data.incomes.pop();
+  data.expenses.pop();
+  assert.equal(monthlySavings(data, '2026-10'), 100000);
 });
 
 test('une ligne payée et une dépense ajoutée affectent les blocs suivants', () => {

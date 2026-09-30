@@ -45,12 +45,18 @@ export function snapshot(data, month) {
   const linkedPaid = sum(projectCommitments.map(c => Math.min(c.cents, sum(project.filter(x => x.commitmentId === c.id).map(x => x.cents)))));
   // A planned payment replaces its reservation. Any excess or unlinked project payment adds to it.
   const projectCost = reservedProject + realizedProject - linkedPaid;
-  const extraIncome = sum(data.incomes.filter(x => monthKey(x.date) === month).map(x => x.cents));
-  const target = budget.income == null ? (budget.target ?? 0) : budget.income - plannedPersonal;
-  const projected = target + extraIncome - excessPersonal - personalReservation - projectCost;
+  const incomes = data.incomes.filter(x => monthKey(x.date) === month);
+  const uberActual = sum(incomes.filter(x => x.kind === 'uber' || (!x.kind && /uber/i.test(x.label ?? ''))).map(x => x.cents));
+  const extraIncome = sum(incomes.filter(x => x.kind !== 'uber' && (x.kind || !/uber/i.test(x.label ?? ''))).map(x => x.cents));
+  const salary = budget.salaryCents ?? budget.income ?? 0;
+  const uberTarget = budget.uberTargetCents ?? 0;
+  const target = budget.income == null ? (budget.target ?? 0) : salary + uberTarget - plannedPersonal;
+  const realizedSavings = budget.income == null ? target + uberActual + extraIncome : salary + uberActual + extraIncome - plannedPersonal;
+  const projected = realizedSavings - excessPersonal - personalReservation - projectCost;
   return {
     budget, categoryRows, commitments, personal, project, plannedPersonal, spentPersonal,
-    excessPersonal, personalReservation, projectCost, reservedProject, linkedPaid, extraIncome, target, projected,
+    excessPersonal, personalReservation, projectCost, reservedProject, linkedPaid, salary, uberTarget, uberActual,
+    extraIncome, target, projected,
     delta: projected - target,
     monthHasFullBudget: budget.income != null && Object.keys(budget.categories).length > 0
   };
@@ -58,7 +64,7 @@ export function snapshot(data, month) {
 
 export function monthlySavings(data, month) {
   const s = snapshot(data, month);
-  return s.target + s.extraIncome - s.excessPersonal - s.personalReservation;
+  return s.projected + s.projectCost;
 }
 
 export function externalForMonth(data, month) {

@@ -27,6 +27,7 @@ let month = monthKey(today()) < '2026-10' ? '2026-10' : monthKey(today());
 let view = 'accueil';
 let dialog = false;
 let selectedBlock = '';
+let selectedCategory = '';
 let expandedBlocks = new Set();
 const app = document.querySelector('#app');
 localStorage.removeItem(STORAGE);
@@ -44,33 +45,35 @@ function dashboard() {
   const savings = monthlySavings(data, month);
   const row = monthlyTable(data).find(item => item.month === month);
   const tone = savings < 0 ? 'danger' : savings < 5000 ? 'critical' : savings < 10000 ? 'warning' : 'good';
-  const categories = s.categoryRows.map(item => `<div class="category-row"><div><strong>${safe(item.name)}</strong><small>Prévu ${money(item.planned)} · Dépensé ${money(item.spent)}</small></div><b class="${item.spent > item.planned ? 'negative' : ''}">${money(item.planned - item.spent)}</b></div>`).join('');
-  const budget = data.budgets[month] ?? { income: 0, categories: {} };
-  return `<section class="hero ${tone}"><div class="eyebrow">ÉCONOMIE MENSUELLE PRÉVUE</div><div class="big">${money(savings)}</div><div class="hero-foot"><span>Budget initial ${money(s.target)}</span><span>Variation ${savings - s.target >= 0 ? '+' : ''}${money(savings - s.target)}</span></div></section>
-    <div class="summary-grid"><article><small>Prévu dépenses</small><b>${money(s.plannedPersonal)}</b></article><article><small>Dépensé réel</small><b>${money(s.spentPersonal)}</b></article><article><small>Reste sur postes</small><b>${money(s.plannedPersonal - s.spentPersonal)}</b></article></div>
-    <div class="summary-grid"><article><small>Économies cumulées</small><b>${money(row?.savingsCumulative ?? 0)}</b></article><article><small>Financement cumulé</small><b>${money(row?.totalCumulative ?? 0)}</b></article><article><small>Après Gantt</small><b class="${(row?.projectBalance ?? 0) < 0 ? 'negative' : ''}">${money(row?.projectBalance ?? 0)}</b></article></div>
+  const chosen = s.categoryRows.some(item => item.name === selectedCategory) ? selectedCategory : (s.categoryRows[0]?.name ?? 'Autre dépense personnelle');
+  const categories = s.categoryRows.map(item => `<button type="button" class="category-chip ${item.name === chosen ? 'active' : ''}" data-category-chip="${safe(item.name)}"><strong>${safe(item.name)}</strong><small>Prévu ${money(item.planned)} · Dépensé ${money(item.spent)}</small><b class="${item.spent > item.planned ? 'negative' : ''}">Reste ${money(item.planned - item.spent)}</b></button>`).join('');
+  const budget = s.budget;
+  return `<section class="hero ${tone}"><div class="eyebrow">ÉCONOMIE DU MOIS AVEC GAINS UBER SAISIS</div><div class="big">${money(savings)}</div><div class="hero-foot"><span>Objectif avec Uber ${money(s.target)}</span><span>Écart ${savings - s.target >= 0 ? '+' : ''}${money(savings - s.target)}</span></div></section>
+    <div class="summary-grid"><article><small>Salaire prévu</small><b>${money(s.salary)}</b></article><article><small>Objectif Uber</small><b>${money(s.uberTarget)}</b></article><article><small>Uber réalisé</small><b>${money(s.uberActual)}</b></article></div>
+    <div class="summary-grid"><article><small>Économies cumulées</small><b>${money(row?.savingsCumulative ?? 0)}</b></article><article><small>Total cumulé avec apports</small><b>${money(row?.totalCumulative ?? 0)}</b></article><article><small>Après Gantt</small><b class="${(row?.projectBalance ?? 0) < 0 ? 'negative' : ''}">${money(row?.projectBalance ?? 0)}</b></article></div>
     ${!Object.keys(data.budgets).length ? '<p class="notice">Aucune prévision dans ce compte. Vérifie l’adresse dans Réglages, puis <button type="button" data-refresh-budget>actualise les données</button>.</p>' : ''}
-    <section class="panel"><h2>Ce mois en détail</h2>${line('Revenus prévus', budget.income ?? 0)}${line('Dépenses prévues', -s.plannedPersonal)}${line('Dépassements et imprévus', -s.excessPersonal - s.personalReservation)}${line('Revenus ajoutés', s.extraIncome)}${line('Économie du mois', savings, 'total')}
-      <p class="note">Une dépense comprise dans un poste prévu fait baisser son reste disponible. Elle change l’économie prévue si elle dépasse ce poste ou correspond à une nouvelle dépense.</p></section>
-    <section class="panel"><h2>Postes personnels</h2>${categories || '<p class="muted">Aucun poste prévu pour ce mois.</p>'}</section>
-    <section class="panel"><h2>Modifier les prévisions de ${safe(prettyMonth(month))}</h2><form id="budget-form">
-      <label>Revenus prévus (€) <input name="income" type="number" step="0.01" min="0" value="${((budget.income ?? 0)/100).toFixed(2)}" required /></label>
+    <section class="panel"><h2>Ajouter une dépense</h2><label for="category-filter">Choisir un poste</label><input id="category-filter" type="search" placeholder="Filtrer les postes" aria-label="Filtrer les postes" /><div class="category-chips">${categories || '<p class="muted">Aucun poste prévu pour ce mois.</p>'}</div>
+      <form id="quick-expense-form" class="quick-entry"><label>Poste <select name="category">${[...s.categoryRows.map(item => item.name), 'Autre dépense personnelle'].map(name => `<option value="${safe(name)}" ${name === chosen ? 'selected' : ''}>${safe(name)}</option>`).join('')}</select></label><label>Montant dépensé (€) <input name="amount" type="number" min="0.01" step="0.01" inputmode="decimal" required /></label><label>Date <input name="date" type="date" value="${month === monthKey(today()) ? today() : `${month}-01`}" required /></label><label>Description (facultatif) <input name="description" maxlength="120" /></label><p id="quick-error" class="error" role="alert"></p><button type="submit">Enregistrer la dépense</button></form>
+      <p class="note">Une dépense prévue diminue le reste du poste. Seul un dépassement ou un nouveau poste réduit l’économie calculée.</p></section>
+    <section class="panel"><h2>Gains Uber du mois</h2><p class="note">${money(s.uberActual)} encaissés sur ${money(s.uberTarget)} prévus · ${money(Math.max(0, s.uberTarget - s.uberActual))} encore à gagner.</p><form id="income-form" class="quick-entry"><label>Gain Uber (€) <input name="amount" type="number" min="0.01" step="0.01" inputmode="decimal" required /></label><label>Date du gain <input name="date" type="date" value="${month === monthKey(today()) ? today() : `${month}-01`}" required /></label><button type="submit">Ajouter ce gain</button><p id="income-error" class="error" role="alert"></p></form>
+      ${data.incomes.filter(x => monthKey(x.date) === month).sort((a, b) => b.date.localeCompare(a.date)).map(x => `<div class="transaction"><div><b>${safe(x.kind === 'uber' || (!x.kind && /uber/i.test(x.label ?? '')) ? 'Uber' : (x.label || 'Autre revenu'))}</b><small>${safe(x.date)}</small></div><strong>${money(x.cents)}</strong><button class="icon-button" data-edit-income="${safe(x.id)}" aria-label="Corriger ce gain">✎</button><button class="icon-button" data-delete-income="${safe(x.id)}" aria-label="Supprimer ce gain">×</button></div>`).join('')}</section>
+    ${history()}
+    <details class="panel budget-details"><summary>Modifier les prévisions de ${safe(prettyMonth(month))}</summary><form id="budget-form">
+      <label>Salaire prévu (€) <input name="salary" type="number" step="0.01" min="0" value="${(s.salary/100).toFixed(2)}" required /></label><label>Objectif Uber (€) <input name="uberTarget" type="number" step="0.01" min="0" value="${(s.uberTarget/100).toFixed(2)}" required /></label>
       ${Object.entries(budget.categories ?? {}).map(([name, cents]) => `<label>${safe(name)} (€) <input data-category="${safe(name)}" type="number" step="0.01" min="0" value="${(cents/100).toFixed(2)}" required /></label>`).join('')}
       <div class="inline-form"><input name="newCategory" placeholder="Nouveau poste" aria-label="Nouveau poste" /><input name="newAmount" type="number" step="0.01" min="0" placeholder="Montant €" aria-label="Montant du nouveau poste" /></div>
-      <button type="submit">Mettre à jour le budget</button></form></section>`;
+      <button type="submit">Mettre à jour le budget</button></form></details>`;
 }
 
 function history() {
   const rows = data.expenses.filter(x => monthKey(x.date) === month).sort((a, b) => b.date.localeCompare(a.date));
-  return `<section class="panel"><h2>Dépenses de ${safe(prettyMonth(month))}</h2>${rows.length ? rows.map(x => `<div class="transaction"><div><b>${safe(x.description || x.category)}</b><small>${safe(x.date)} · ${safe(x.scope)} · ${safe(x.category)}${x.commitmentId ? ' · échéance liée' : ''}</small></div><strong>${money(x.cents)}</strong><button class="icon-button" data-delete="${safe(x.id)}" aria-label="Supprimer cette dépense">×</button></div>`).join('') : '<p class="muted">Aucune dépense saisie ce mois-ci.</p>'}</section>
-    <section class="panel"><h2>Revenus supplémentaires</h2><form id="income-form" class="inline-form"><input name="label" aria-label="Description du revenu" placeholder="Ex. Uber supplémentaire" required /><input name="amount" type="number" min="0.01" step="0.01" placeholder="Montant €" aria-label="Montant du revenu" required /><button type="submit">Ajouter</button></form>
-    ${data.incomes.filter(x => monthKey(x.date) === month).map(x => `<div class="transaction"><span>${safe(x.label)}</span><b>${money(x.cents)}</b><button class="icon-button" data-delete-income="${safe(x.id)}" aria-label="Supprimer ce revenu">×</button></div>`).join('')}</section>`;
+  return `<section class="panel"><h2>Dépenses de ${safe(prettyMonth(month))}</h2>${rows.length ? rows.map(x => `<div class="transaction"><div><b>${safe(x.description || x.category)}</b><small>${safe(x.date)} · ${safe(x.scope)} · ${safe(x.category)}${x.commitmentId ? ' · échéance liée' : ''}</small></div><strong>${money(x.cents)}</strong><button class="icon-button" data-edit-expense="${safe(x.id)}" aria-label="Corriger cette dépense">✎</button><button class="icon-button" data-delete="${safe(x.id)}" aria-label="Supprimer cette dépense">×</button></div>`).join('') : '<p class="muted">Aucune dépense saisie ce mois-ci.</p>'}</section>`;
 }
 
 function forecasts() {
   const table = monthlyTable(data);
   const gantt = ganttTimeline(data);
-  return `<section class="panel"><h2>Prévisions mois par mois</h2><p class="note">Économie du mois = revenus prévus − dépenses prévues, ajustée par les dépassements et revenus saisis. Le total cumulé ajoute les apports externes. Le solde du projet déduit les blocs du Gantt.</p>
+  return `<section class="panel"><h2>Prévisions mois par mois</h2><p class="note">Économie du mois = salaire prévu + gains Uber saisis − dépenses prévues, ajustée par les dépassements. Le total cumulé ajoute les apports externes. Le solde du projet déduit les blocs du Gantt.</p>
     <div class="table-scroll"><table class="budget-table"><thead><tr><th>Mois</th><th>Économie</th><th>Cumul perso</th><th>Apports</th><th>Total cumulé</th><th>Solde projet</th></tr></thead><tbody>
     ${table.map(row => `<tr class="${row.month === month ? 'selected' : ''}"><th><button data-month="${row.month}">${safe(prettyMonth(row.month))}</button></th><td>${money(row.savings)}</td><td>${money(row.savingsCumulative)}</td><td>${money(row.funding)}</td><td>${money(row.totalCumulative)}</td><td class="${row.projectBalance < 0 ? 'negative' : ''}">${money(row.projectBalance)}</td></tr>`).join('')}</tbody></table></div></section>
     <section class="panel"><h2>Gantt lié au cumul</h2><p class="note">Chaque bloc reçoit les économies et apports indiqués, puis déduit son coût prévu et les dépenses supplémentaires. Ouvre un bloc pour modifier sa date, son coût ou le prix d’une ligne.</p>
@@ -210,8 +213,8 @@ function render() {
   if (view === 'previsions') expandedBlocks = new Set([...document.querySelectorAll('[data-block-details][open]')].map(item => item.dataset.blockDetails));
   app.innerHTML = `<header><div class="brand"><span class="brand-icon">∿</span><div><small>PROJET CALYPÇO</small><h1>Mon budget</h1></div></div><button id="add-expense" class="primary">+ Dépense</button></header>
     <main><div class="month-nav"><button id="prev-month" aria-label="Mois précédent">‹</button><h2>${safe(prettyMonth(month))}</h2><button id="next-month" aria-label="Mois suivant">›</button></div>
-    ${view === 'accueil' ? dashboard() : view === 'depenses' ? history() : view === 'previsions' ? forecasts() : settings()}</main>
-    <nav aria-label="Navigation principale">${[['accueil', 'Accueil'], ['depenses', 'Dépenses'], ['previsions', 'Gantt'], ['reglages', 'Réglages']].map(([id, label]) => `<button data-view="${id}" class="${view === id ? 'active' : ''}">${label}</button>`).join('')}</nav>${expenseDialog()}`;
+    ${view === 'accueil' ? dashboard() : view === 'previsions' ? forecasts() : settings()}</main>
+    <nav aria-label="Navigation principale">${[['accueil', 'Accueil'], ['previsions', 'Gantt'], ['reglages', 'Réglages']].map(([id, label]) => `<button data-view="${id}" class="${view === id ? 'active' : ''}">${label}</button>`).join('')}</nav>${expenseDialog()}`;
   bind();
 }
 
@@ -226,6 +229,28 @@ function bind() {
   document.querySelectorAll('[data-view]').forEach(button => button.onclick = () => { view = button.dataset.view; render(); });
   document.querySelector('#close-modal')?.addEventListener('click', () => { dialog = false; selectedBlock = ''; render(); });
   document.querySelector('.modal-backdrop')?.addEventListener('click', event => { if (event.target.classList.contains('modal-backdrop')) { dialog = false; selectedBlock = ''; render(); } });
+  const quickExpense = document.querySelector('#quick-expense-form');
+  document.querySelectorAll('[data-category-chip]').forEach(button => button.onclick = () => {
+    selectedCategory = button.dataset.categoryChip;
+    quickExpense.elements.category.value = selectedCategory;
+    document.querySelectorAll('[data-category-chip]').forEach(chip => chip.classList.toggle('active', chip === button));
+    quickExpense.elements.amount.focus();
+  });
+  document.querySelector('#category-filter')?.addEventListener('input', event => {
+    const term = event.target.value.trim().toLocaleLowerCase('fr-FR');
+    document.querySelectorAll('[data-category-chip]').forEach(chip => { chip.hidden = !chip.dataset.categoryChip.toLocaleLowerCase('fr-FR').includes(term); });
+  });
+  if (quickExpense) quickExpense.onsubmit = event => {
+    event.preventDefault();
+    const values = Object.fromEntries(new FormData(quickExpense));
+    try {
+      addExpense(data, { ...values, scope: 'Personnel', count: '1' });
+      selectedCategory = values.category;
+      month = monthKey(values.date);
+      save(); render();
+      announce(`Dépense enregistrée. Reste du poste actualisé, économie du mois : ${money(monthlySavings(data, month))}.`);
+    } catch (error) { quickExpense.querySelector('#quick-error').textContent = error.message; }
+  };
   const form = document.querySelector('#expense-form');
   if (form) {
     const scope = form.querySelector('#expense-scope');
@@ -255,6 +280,26 @@ function bind() {
   document.querySelectorAll('[data-delete-income]').forEach(button => button.onclick = () => {
     data.incomes = data.incomes.filter(x => x.id !== button.dataset.deleteIncome); save(); render();
   });
+  for (const [attribute, entries] of [['data-edit-expense', data.expenses], ['data-edit-income', data.incomes]]) {
+    document.querySelectorAll(`[${attribute}]`).forEach(button => button.onclick = () => {
+      const item = entries.find(entry => entry.id === button.getAttribute(attribute));
+      if (!item) return;
+      const row = button.closest('.transaction');
+      row.nextElementSibling?.classList.contains('correction-form') && row.nextElementSibling.remove();
+      const edit = document.createElement('form');
+      edit.className = 'correction-form';
+      edit.innerHTML = `<label>Corriger le montant (€) <input name="amount" type="number" min="0.01" step="0.01" inputmode="decimal" value="${(item.cents / 100).toFixed(2)}" required /></label><button type="submit">Enregistrer</button><button type="button" class="cancel-edit">Annuler</button><p class="error" role="alert"></p>`;
+      row.after(edit);
+      edit.querySelector('input').focus();
+      edit.querySelector('.cancel-edit').onclick = () => edit.remove();
+      edit.onsubmit = event => {
+        event.preventDefault();
+        const cents = Math.round(Number(edit.elements.amount.value) * 100);
+        if (!Number.isSafeInteger(cents) || cents <= 0) { edit.querySelector('.error').textContent = 'Saisis un montant positif.'; return; }
+        item.cents = cents; save(); render();
+      };
+    });
+  }
   document.querySelectorAll('[data-month]').forEach(button => button.onclick = () => { month = button.dataset.month; view = 'accueil'; render(); });
   document.querySelectorAll('[data-add-block-expense]').forEach(button => button.onclick = () => { selectedBlock = button.dataset.addBlockExpense; month = (data.ganttBlocks ?? []).find(block => block.id === selectedBlock)?.month ?? month; dialog = true; render(); });
   document.querySelectorAll('[data-edit-line]').forEach(edit => edit.onsubmit = event => {
@@ -287,8 +332,9 @@ function bind() {
   if (budgetForm) budgetForm.onsubmit = event => {
     event.preventDefault();
     const cents = input => Math.round(Number(input) * 100);
-    const income = cents(budgetForm.elements.income.value);
-    if (!Number.isSafeInteger(income) || income < 0) return;
+    const salaryCents = cents(budgetForm.elements.salary.value);
+    const uberTargetCents = cents(budgetForm.elements.uberTarget.value);
+    if (![salaryCents, uberTargetCents].every(value => Number.isSafeInteger(value) && value >= 0)) return;
     const categories = {};
     for (const input of budgetForm.querySelectorAll('[data-category]')) {
       const value = cents(input.value);
@@ -301,7 +347,7 @@ function bind() {
       if (!Number.isSafeInteger(value) || value < 0) return;
       categories[name] = value;
     }
-    data.budgets[month] = { income, categories };
+    data.budgets[month] = { income: salaryCents + uberTargetCents, salaryCents, uberTargetCents, categories };
     save(); render();
   };
   const blockForm = document.querySelector('#block-form');
@@ -317,8 +363,11 @@ function bind() {
   const income = document.querySelector('#income-form');
   if (income) income.onsubmit = event => {
     event.preventDefault(); const values = Object.fromEntries(new FormData(income)); const cents = Math.round(Number(values.amount) * 100);
-    if (!Number.isSafeInteger(cents) || cents <= 0) return;
-    data.incomes.push({ id: uid(), date: `${month}-01`, label: values.label.trim(), cents }); save(); render();
+    if (!Number.isSafeInteger(cents) || cents <= 0 || !/^\d{4}-\d{2}-\d{2}$/.test(values.date) || Number.isNaN(Date.parse(`${values.date}T12:00:00Z`))) {
+      income.querySelector('#income-error').textContent = 'Vérifie le montant et la date.'; return;
+    }
+    data.incomes.push({ id: uid(), kind: 'uber', date: values.date, label: 'Uber', cents });
+    month = monthKey(values.date); save(); render();
   };
   const notifications = document.querySelector('#notifications');
   if (notifications) notifications.onchange = async () => {
