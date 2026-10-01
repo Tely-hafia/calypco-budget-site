@@ -11,10 +11,6 @@ const today = () => {
 };
 const safe = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 const prettyMonth = key => new Intl.DateTimeFormat('fr-FR', { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${key}-01T12:00:00Z`));
-const changeMonth = (key, offset) => {
-  const [y, m] = key.split('-').map(Number);
-  return new Date(Date.UTC(y, m - 1 + offset, 1)).toISOString().slice(0, 7);
-};
 let data = seed();
 let user = null;
 let syncError = '';
@@ -29,6 +25,8 @@ let dialog = false;
 let selectedBlock = '';
 let selectedCategory = '';
 let expandedBlocks = new Set();
+let matrixPosition = { left: 0, top: 0 };
+let matrixInitialized = false;
 const app = document.querySelector('#app');
 localStorage.removeItem(STORAGE);
 const pinKey = id => `calypco-pin-${id}`;
@@ -40,17 +38,48 @@ const save = () => {
 };
 const line = (label, value, className = '') => `<div class="line ${className}"><span>${safe(label)}</span><strong>${money(value)}</strong></div>`;
 
+function budgetMatrix() {
+  const table = monthlyTable(data);
+  const months = table.map(row => row.month);
+  const states = months.map(key => snapshot(data, key));
+  const categories = [...new Set(states.flatMap(state => Object.keys(state.budget.categories ?? {})))];
+  const values = (label, pick, kind = '') => ({ label, kind, amounts: states.map((state, index) => pick(state, table[index], index)) });
+  const rows = [
+    values('Salaire prévu', state => state.salary, 'income'),
+    values('Objectif Uber', state => state.uberTarget, 'income'),
+    values('Uber saisi', state => state.uberActual, 'income'),
+    values('Autres revenus saisis', state => state.extraIncome, 'income'),
+    values('Revenus prévus', state => state.salary + Math.max(state.uberTarget, state.uberActual) + state.extraIncome, 'total'),
+    values('Revenus avec Uber saisi', state => state.salary + state.uberActual + state.extraIncome, 'total'),
+    ...categories.map(category => values(category, state => state.budget.categories?.[category] ?? 0, 'expense')),
+    values('Total dépenses prévues', state => state.plannedPersonal, 'total'),
+    values('Dépenses saisies', state => state.spentPersonal, 'expense'),
+    values('Dépassements et engagements', state => state.excessPersonal + state.personalReservation, 'expense'),
+    values('Économie prévue', (_, row) => row.forecastSavings, 'highlight'),
+    values('Économie avec Uber saisi', (_, row) => row.savings, 'highlight'),
+    values('Cumul personnel prévu', (_, row) => row.forecastSavingsCumulative, 'total'),
+    values('Cumul personnel avec Uber saisi', (_, row) => row.savingsCumulative, 'total'),
+    values('Apports externes', (_, row) => row.funding, 'income'),
+    values('Total cumulé prévu', (_, row) => row.forecastTotalCumulative, 'total'),
+    values('Total cumulé avec Uber saisi', (_, row) => row.totalCumulative, 'total'),
+    values('Solde Gantt prévu', (_, row) => row.forecastProjectBalance, 'highlight'),
+    values('Solde Gantt avec Uber saisi', (_, row) => row.projectBalance, 'highlight')
+  ];
+  return `<section class="panel matrix-panel"><h2>Budget mois par mois</h2><p class="note">Fais défiler le tableau dans ce cadre. Appuie sur un mois pour le suivre juste en dessous. Les objectifs Uber sont des prévisions ; seuls les gains saisis entrent dans le calcul « avec Uber saisi ».</p>
+    <div class="matrix-scroll" role="region" aria-label="Tableau du budget défilant" tabindex="0"><table class="matrix-table"><thead><tr><th scope="col">Poste</th>${months.map(key => `<th scope="col" class="${key === month ? 'selected-month' : ''}"><button type="button" data-month="${key}" ${key === month ? 'aria-current="date"' : ''}>${safe(prettyMonth(key))}</button></th>`).join('')}</tr></thead><tbody>
+    ${rows.map(row => `<tr class="${row.kind}"><th scope="row">${safe(row.label)}</th>${row.amounts.map((amount, index) => `<td class="${months[index] === month ? 'selected-month' : ''} ${amount < 0 ? 'negative' : ''}">${money(amount)}${row.kind === 'expense' && !row.label.startsWith('Total') && !['Dépenses saisies', 'Dépassements et engagements'].includes(row.label) && states[index].categoryRows.some(item => item.name === row.label && item.spent) ? `<small>Saisi ${money(states[index].categoryRows.find(item => item.name === row.label).spent)}</small>` : ''}</td>`).join('')}</tr>`).join('')}</tbody></table></div></section>`;
+}
+
 function dashboard() {
   const s = snapshot(data, month);
   const savings = monthlySavings(data, month);
   const row = monthlyTable(data).find(item => item.month === month);
-  const tone = savings < 0 ? 'danger' : savings < 5000 ? 'critical' : savings < 10000 ? 'warning' : 'good';
   const chosen = s.categoryRows.some(item => item.name === selectedCategory) ? selectedCategory : (s.categoryRows[0]?.name ?? 'Autre dépense personnelle');
   const categories = s.categoryRows.map(item => `<button type="button" class="category-chip ${item.name === chosen ? 'active' : ''}" data-category-chip="${safe(item.name)}"><strong>${safe(item.name)}</strong><small>Prévu ${money(item.planned)} · Dépensé ${money(item.spent)}</small><b class="${item.spent > item.planned ? 'negative' : ''}">Reste ${money(item.planned - item.spent)}</b></button>`).join('');
   const budget = s.budget;
-  return `<section class="hero ${tone}"><div class="eyebrow">ÉCONOMIE DU MOIS AVEC GAINS UBER SAISIS</div><div class="big">${money(savings)}</div><div class="hero-foot"><span>Objectif avec Uber ${money(s.target)}</span><span>Écart ${savings - s.target >= 0 ? '+' : ''}${money(savings - s.target)}</span></div></section>
-    <div class="summary-grid"><article><small>Salaire prévu</small><b>${money(s.salary)}</b></article><article><small>Objectif Uber</small><b>${money(s.uberTarget)}</b></article><article><small>Uber réalisé</small><b>${money(s.uberActual)}</b></article></div>
-    <div class="summary-grid"><article><small>Économies cumulées</small><b>${money(row?.savingsCumulative ?? 0)}</b></article><article><small>Total cumulé avec apports</small><b>${money(row?.totalCumulative ?? 0)}</b></article><article><small>Après Gantt</small><b class="${(row?.projectBalance ?? 0) < 0 ? 'negative' : ''}">${money(row?.projectBalance ?? 0)}</b></article></div>
+  return `${budgetMatrix()}
+    <section class="panel month-control"><label for="budget-month">Mois à suivre</label><select id="budget-month">${monthlyTable(data).map(item => `<option value="${item.month}" ${item.month === month ? 'selected' : ''}>${safe(prettyMonth(item.month))}</option>`).join('')}</select>
+      <div class="month-totals"><div><small>Économie prévue</small><strong>${money(row?.forecastSavings ?? 0)}</strong></div><div><small>Avec Uber saisi</small><strong class="${savings < 0 ? 'negative' : ''}">${money(savings)}</strong></div><div><small>Cumul avec apports</small><strong>${money(row?.totalCumulative ?? 0)}</strong></div></div></section>
     ${!Object.keys(data.budgets).length ? '<p class="notice">Aucune prévision dans ce compte. Vérifie l’adresse dans Réglages, puis <button type="button" data-refresh-budget>actualise les données</button>.</p>' : ''}
     <section class="panel"><h2>Ajouter une dépense</h2><label for="category-filter">Choisir un poste</label><input id="category-filter" type="search" placeholder="Filtrer les postes" aria-label="Filtrer les postes" /><div class="category-chips">${categories || '<p class="muted">Aucun poste prévu pour ce mois.</p>'}</div>
       <form id="quick-expense-form" class="quick-entry"><label>Poste <select name="category">${[...s.categoryRows.map(item => item.name), 'Autre dépense personnelle'].map(name => `<option value="${safe(name)}" ${name === chosen ? 'selected' : ''}>${safe(name)}</option>`).join('')}</select></label><label>Montant dépensé (€) <input name="amount" type="number" min="0.01" step="0.01" inputmode="decimal" required /></label><label>Date <input name="date" type="date" value="${month === monthKey(today()) ? today() : `${month}-01`}" required /></label><label>Description (facultatif) <input name="description" maxlength="120" /></label><p id="quick-error" class="error" role="alert"></p><button type="submit">Enregistrer la dépense</button></form>
@@ -71,13 +100,9 @@ function history() {
 }
 
 function forecasts() {
-  const table = monthlyTable(data);
   const gantt = ganttTimeline(data, { forecastUber: true });
   const withLoggedUber = new Map(ganttTimeline(data).map(block => [block.id, block]));
-  return `<section class="panel"><h2>Prévisions mois par mois</h2><p class="note">Prévu = salaire + objectif Uber − dépenses prévues, avec tes corrections de dépenses. « Avec Uber saisi » compte seulement les gains enregistrés : la différence reste à gagner. Les apports s’ajoutent au cumul et les blocs du Gantt sont déduits du solde projet.</p>
-    <div class="table-scroll"><table class="budget-table"><thead><tr><th>Mois</th><th>Économie prévue</th><th>Cumul prévu</th><th>Apports</th><th>Total prévu</th><th>Solde projet prévu</th></tr></thead><tbody>
-    ${table.map(row => `<tr class="${row.month === month ? 'selected' : ''}"><th><button data-month="${row.month}">${safe(prettyMonth(row.month))}</button></th><td>${money(row.forecastSavings)}<small>Avec Uber saisi : ${money(row.savings)}</small></td><td>${money(row.forecastSavingsCumulative)}<small>Avec Uber saisi : ${money(row.savingsCumulative)}</small></td><td>${money(row.funding)}</td><td>${money(row.forecastTotalCumulative)}<small>Avec Uber saisi : ${money(row.totalCumulative)}</small></td><td class="${row.forecastProjectBalance < 0 ? 'negative' : ''}">${money(row.forecastProjectBalance)}<small>Avec Uber saisi : ${money(row.projectBalance)}</small></td></tr>`).join('')}</tbody></table></div></section>
-    <section class="panel"><h2>Gantt lié au cumul</h2><p class="note">Le solde prévu inclut les objectifs Uber, qui restent à gagner. Le montant « Avec Uber saisi » utilise uniquement les gains enregistrés. Chaque bloc déduit son coût prévu et les dépenses supplémentaires. Ouvre un bloc pour modifier sa date, son coût ou le prix d’une ligne.</p>
+  return `<section class="panel"><h2>Gantt lié au budget</h2><p class="note">Le tableau du budget est sur l’Accueil. Ici, chaque bloc reçoit les économies prévues et les apports, puis déduit son coût. « Avec Uber saisi » utilise uniquement les gains enregistrés. Ouvre un bloc pour modifier sa date, son coût ou le prix d’une ligne.</p>
     ${gantt.length ? gantt.map(block => `<details class="gantt-block" data-block-details="${safe(block.id)}" ${expandedBlocks.has(block.id) ? 'open' : ''}><summary><span><small>${safe(block.phase || prettyMonth(block.month))}</small><strong>${safe(block.label)}</strong></span><span class="gantt-values"><b class="${block.balance < 0 ? 'negative' : ''}">Prévu ${money(block.balance)}</b><small>Avec Uber saisi : ${money(withLoggedUber.get(block.id)?.balance ?? block.balance)}</small><small>+ ${money(block.inflow)} · − ${money(block.cost)}</small></span></summary>
       ${block.note ? `<p class="note">${safe(block.note)}</p>` : ''}<div class="line"><span>Coût prévu</span><strong>${money(block.plannedCents)}</strong></div><div class="line"><span>Dépenses saisies</span><strong>${money(block.actual)}</strong></div>${block.overrun ? line('En plus du prévu', block.overrun) : ''}
       ${(block.items ?? []).map(item => { const paid = data.expenses.filter(x => x.ganttLineId === item.id).reduce((n, x) => n + x.cents, 0); return `<form class="gantt-item" data-edit-line="${safe(block.id)}" data-line="${safe(item.id)}"><span>${safe(item.label)}${item.note ? `<small>${safe(item.note)}</small>` : ''}<small>Saisi ${money(paid)}</small></span><span class="gantt-line-edit"><label>Prévu (€) <input name="amount" type="number" min="0" step="0.01" value="${(item.plannedCents / 100).toFixed(2)}" required /></label><button type="submit" aria-label="Enregistrer ${safe(item.label)}">Enregistrer</button></span></form>`; }).join('')}
@@ -212,10 +237,21 @@ function render() {
   if (!pinRecord()) { pinSetup(); return; }
   if (locked) { lockScreen(); return; }
   if (view === 'previsions') expandedBlocks = new Set([...document.querySelectorAll('[data-block-details][open]')].map(item => item.dataset.blockDetails));
+  const previousMatrix = document.querySelector('.matrix-scroll');
+  if (previousMatrix) matrixPosition = { left: previousMatrix.scrollLeft, top: previousMatrix.scrollTop };
   app.innerHTML = `<header><div class="brand"><span class="brand-icon">∿</span><div><small>PROJET CALYPÇO</small><h1>Mon budget</h1></div></div><button id="add-expense" class="primary">+ Dépense</button></header>
-    <main><div class="month-nav"><button id="prev-month" aria-label="Mois précédent">‹</button><h2>${safe(prettyMonth(month))}</h2><button id="next-month" aria-label="Mois suivant">›</button></div>
-    ${view === 'accueil' ? dashboard() : view === 'previsions' ? forecasts() : settings()}</main>
+    <main>${view === 'accueil' ? dashboard() : view === 'previsions' ? forecasts() : settings()}</main>
     <nav aria-label="Navigation principale">${[['accueil', 'Accueil'], ['previsions', 'Gantt'], ['reglages', 'Réglages']].map(([id, label]) => `<button data-view="${id}" class="${view === id ? 'active' : ''}">${label}</button>`).join('')}</nav>${expenseDialog()}`;
+  const matrix = document.querySelector('.matrix-scroll');
+  if (matrix) {
+    if (!matrixInitialized) {
+      const selected = matrix.querySelector('th.selected-month');
+      matrixPosition.left = selected ? selected.offsetLeft - matrix.clientWidth / 2 : 0;
+      matrixInitialized = true;
+    }
+    matrix.scrollLeft = matrixPosition.left;
+    matrix.scrollTop = matrixPosition.top;
+  }
   bind();
 }
 
@@ -224,8 +260,13 @@ function announce(message) {
   if ('serviceWorker' in navigator) navigator.serviceWorker.ready.then(reg => reg.showNotification('Calypço Budget', { body: message, icon: `${import.meta.env.BASE_URL}icon.svg`, tag: 'calypco-budget' })).catch(() => {});
 }
 function bind() {
-  document.querySelector('#prev-month').onclick = () => { month = changeMonth(month, -1); render(); };
-  document.querySelector('#next-month').onclick = () => { month = changeMonth(month, 1); render(); };
+  document.querySelector('#budget-month')?.addEventListener('change', event => {
+    month = event.target.value;
+    render();
+    const matrix = document.querySelector('.matrix-scroll');
+    const selected = matrix?.querySelector('th.selected-month');
+    if (selected) matrix.scrollLeft = selected.offsetLeft - matrix.clientWidth / 2;
+  });
   document.querySelector('#add-expense').onclick = () => { selectedBlock = ''; dialog = true; render(); };
   document.querySelectorAll('[data-view]').forEach(button => button.onclick = () => { view = button.dataset.view; render(); });
   document.querySelector('#close-modal')?.addEventListener('click', () => { dialog = false; selectedBlock = ''; render(); });
