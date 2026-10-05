@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { addExpense, forecastSavings, ganttTimeline, installments, monthlySavings, monthlyTable, removeGanttBlock, seed, snapshot, updateGanttBlock, updateGanttLine } from './budget.js';
+import { addExpense, addGanttLine, currentBalance, forecastSavings, ganttTimeline, installments, monthlySavings, monthlyTable, removeGanttBlock, removeGanttLine, seed, snapshot, updateGanttBlock, updateGanttLine } from './budget.js';
 
 const example = () => {
   const data = seed();
@@ -96,4 +96,38 @@ test('décaler ou retirer un bloc conserve ses apports à la date initiale', () 
   removeGanttBlock(data, 'b1');
   assert.equal(ganttTimeline(data).at(-1).balance, 300000);
   assert.equal(monthlyTable(data).find(x => x.month === '2026-10').projectBalance, 240000);
+});
+
+test('le solde actuel déduit chaque paiement et l’archivage ne change pas le calcul', () => {
+  const data = example();
+  data.budgets['2026-10'] = { income: 120000, salaryCents: 100000, uberTargetCents: 20000, categories: { Nourriture: 10000 } };
+  assert.equal(currentBalance(data, '2026-10'), 100000);
+  const expense = addExpense(data, { amount: '300', date: '2026-10-05', scope: 'Personnel', category: 'Nourriture' });
+  assert.equal(currentBalance(data, '2026-10'), 70000);
+  expense.archivedAt = '2026-10-06T10:00:00Z';
+  assert.equal(currentBalance(data, '2026-10'), 70000);
+  data.incomes.push({ id: 'u1', kind: 'uber', date: '2026-10-06', cents: 10000 });
+  assert.equal(currentBalance(data, '2026-10'), 80000);
+  const project = addExpense(data, { amount: '50', date: '2026-10-07', scope: 'Calypço', category: 'Piscine', ganttBlockId: 'b1' });
+  assert.equal(currentBalance(data, '2026-10'), 75000);
+  project.cents = 3000;
+  assert.equal(currentBalance(data, '2026-10'), 77000);
+  assert.equal(ganttTimeline(data, { forecastUber: true })[0].balance, 107000);
+});
+
+test('retirer un poste du Gantt garde ses paiements et archiver le bloc garde son coût', () => {
+  const data = example();
+  addExpense(data, { amount: '250', date: '2026-10-05', scope: 'Calypço', category: 'Piscine', ganttBlockId: 'b1', ganttLineId: 'l1' });
+  const before = ganttTimeline(data, { forecastUber: true })[0].balance;
+  data.ganttBlocks[0].doneAt = '2026-10-06T10:00:00Z';
+  data.ganttBlocks[0].archivedAt = '2026-10-06T10:00:00Z';
+  assert.equal(ganttTimeline(data, { forecastUber: true })[0].balance, before);
+  removeGanttLine(data, 'b1', 'l1');
+  assert.equal(data.expenses[0].ganttLineId, null);
+  assert.equal(data.ganttBlocks[0].plannedCents, 0);
+  assert.equal(ganttTimeline(data, { forecastUber: true })[0].cost, 25000);
+  addGanttLine(data, 'b1', 'Ciment', 14000);
+  assert.equal(ganttTimeline(data, { forecastUber: true })[0].cost, 39000);
+  updateGanttLine(data, 'b1', data.ganttBlocks[0].items[0].id, 15000, 'Ciment corrigé');
+  assert.equal(ganttTimeline(data, { forecastUber: true })[0].cost, 40000);
 });
