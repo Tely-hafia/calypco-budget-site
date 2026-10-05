@@ -67,6 +67,13 @@ export function monthlySavings(data, month) {
   return s.projected + s.projectCost;
 }
 
+// Paid transactions change today's available amount even while they are still
+// inside their planned envelopes. Reservations belong to the forecast only.
+export function currentBalance(data, month) {
+  const s = snapshot(data, month);
+  return s.salary + s.uberActual + s.extraIncome - s.spentPersonal - sum(s.project.map(x => x.cents));
+}
+
 export function forecastSavings(data, month) {
   const s = snapshot(data, month);
   // An Uber target belongs in the forecast, but only logged gains belong in the available balance.
@@ -106,15 +113,38 @@ function assertCents(cents) {
   if (!Number.isSafeInteger(cents) || cents < 0) throw new Error('Saisis un montant valide.');
 }
 
-export function updateGanttLine(data, blockId, lineId, plannedCents) {
+export function updateGanttLine(data, blockId, lineId, plannedCents, label) {
   assertCents(plannedCents);
   const block = (data.ganttBlocks ?? []).find(entry => entry.id === blockId);
   const item = block?.items?.find(entry => entry.id === lineId);
   if (!item) throw new Error('Ligne du Gantt introuvable.');
+  if (label !== undefined && !label.trim()) throw new Error('Saisis le nom du poste.');
   const total = block.plannedCents + plannedCents - item.plannedCents;
   assertCents(total);
   block.plannedCents = total;
   item.plannedCents = plannedCents;
+  if (label !== undefined) item.label = label.trim();
+}
+
+export function addGanttLine(data, blockId, label, plannedCents) {
+  assertCents(plannedCents);
+  if (!label?.trim()) throw new Error('Saisis le nom du poste.');
+  const block = (data.ganttBlocks ?? []).find(entry => entry.id === blockId);
+  if (!block) throw new Error('Bloc du Gantt introuvable.');
+  assertCents(block.plannedCents + plannedCents);
+  block.items ??= [];
+  block.items.push({ id: uid(), label: label.trim(), plannedCents });
+  block.plannedCents += plannedCents;
+}
+
+export function removeGanttLine(data, blockId, lineId) {
+  const block = (data.ganttBlocks ?? []).find(entry => entry.id === blockId);
+  const index = block?.items?.findIndex(entry => entry.id === lineId) ?? -1;
+  if (index < 0) throw new Error('Poste du Gantt introuvable.');
+  const [item] = block.items.splice(index, 1);
+  block.plannedCents = Math.max(0, block.plannedCents - item.plannedCents);
+  // Payments remain on their block as additional costs, never disappear.
+  for (const expense of data.expenses) if (expense.ganttBlockId === blockId && expense.ganttLineId === lineId) expense.ganttLineId = null;
 }
 
 function preserveFunding(data, block, orderHint) {
