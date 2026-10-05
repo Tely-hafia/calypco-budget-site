@@ -1,6 +1,6 @@
 import './style.css';
 import { currentUser, signIn, signOut, readBudget, writeBudget } from './cloud.js';
-import { addExpense, ganttTimeline, money, monthKey, monthlySavings, monthlyTable, removeGanttBlock, seed, snapshot, uid, updateGanttBlock, updateGanttLine } from './budget.js';
+import { addExpense, addGanttLine, currentBalance, ganttTimeline, money, monthKey, monthlyTable, removeGanttBlock, removeGanttLine, seed, snapshot, uid, updateGanttBlock, updateGanttLine } from './budget.js';
 import { makePinRecord, verifyPin } from './pin.js';
 
 const STORAGE = 'calypco-budget-v2';
@@ -49,41 +49,38 @@ function budgetMatrix() {
     values('Objectif Uber', state => state.uberTarget, 'income'),
     values('Uber saisi', state => state.uberActual, 'income'),
     values('Autres revenus saisis', state => state.extraIncome, 'income'),
-    values('Revenus prévus', state => state.salary + Math.max(state.uberTarget, state.uberActual) + state.extraIncome, 'total'),
-    values('Revenus avec Uber saisi', state => state.salary + state.uberActual + state.extraIncome, 'total'),
+    values('Revenus prévus', state => state.salary + state.uberTarget + state.extraIncome, 'total'),
+    values('Revenus pris en compte', state => state.salary + state.uberActual + state.extraIncome, 'total'),
     ...categories.map(category => values(category, state => state.budget.categories?.[category] ?? 0, 'expense')),
     values('Total dépenses prévues', state => state.plannedPersonal, 'total'),
     values('Dépenses saisies', state => state.spentPersonal, 'expense'),
     values('Dépassements et engagements', state => state.excessPersonal + state.personalReservation, 'expense'),
+    values('Solde actuel du mois', (_, row) => currentBalance(data, row.month), 'highlight'),
     values('Économie prévue', (_, row) => row.forecastSavings, 'highlight'),
-    values('Économie avec Uber saisi', (_, row) => row.savings, 'highlight'),
     values('Cumul personnel prévu', (_, row) => row.forecastSavingsCumulative, 'total'),
-    values('Cumul personnel avec Uber saisi', (_, row) => row.savingsCumulative, 'total'),
     values('Apports externes', (_, row) => row.funding, 'income'),
     values('Total cumulé prévu', (_, row) => row.forecastTotalCumulative, 'total'),
-    values('Total cumulé avec Uber saisi', (_, row) => row.totalCumulative, 'total'),
-    values('Solde Gantt prévu', (_, row) => row.forecastProjectBalance, 'highlight'),
-    values('Solde Gantt avec Uber saisi', (_, row) => row.projectBalance, 'highlight')
+    values('Solde Gantt prévu', (_, row) => row.forecastProjectBalance, 'highlight')
   ];
-  return `<section class="panel matrix-panel"><h2>Budget mois par mois</h2><p class="note">Fais défiler le tableau dans ce cadre. Appuie sur un mois pour le suivre juste en dessous. Les objectifs Uber sont des prévisions ; seuls les gains saisis entrent dans le calcul « avec Uber saisi ».</p>
+  return `<section class="panel matrix-panel"><h2>Budget mois par mois</h2><p class="note">Fais défiler le tableau dans ce cadre. Appuie sur un mois pour le suivre juste en dessous. Le solde actuel compte les gains encaissés et les dépenses payées ; le Gantt suit les économies prévues.</p>
     <div class="matrix-scroll" role="region" aria-label="Tableau du budget défilant" tabindex="0"><table class="matrix-table"><thead><tr><th scope="col">Poste</th>${months.map(key => `<th scope="col" class="${key === month ? 'selected-month' : ''}"><button type="button" data-month="${key}" ${key === month ? 'aria-current="date"' : ''}>${safe(prettyMonth(key))}</button></th>`).join('')}</tr></thead><tbody>
     ${rows.map(row => `<tr class="${row.kind}"><th scope="row">${safe(row.label)}</th>${row.amounts.map((amount, index) => `<td class="${months[index] === month ? 'selected-month' : ''} ${amount < 0 ? 'negative' : ''}">${money(amount)}${row.kind === 'expense' && !row.label.startsWith('Total') && !['Dépenses saisies', 'Dépassements et engagements'].includes(row.label) && states[index].categoryRows.some(item => item.name === row.label && item.spent) ? `<small>Saisi ${money(states[index].categoryRows.find(item => item.name === row.label).spent)}</small>` : ''}</td>`).join('')}</tr>`).join('')}</tbody></table></div></section>`;
 }
 
 function dashboard() {
   const s = snapshot(data, month);
-  const savings = monthlySavings(data, month);
+  const balance = currentBalance(data, month);
   const row = monthlyTable(data).find(item => item.month === month);
   const chosen = s.categoryRows.some(item => item.name === selectedCategory) ? selectedCategory : (s.categoryRows[0]?.name ?? 'Autre dépense personnelle');
   const categories = s.categoryRows.map(item => `<button type="button" class="category-chip ${item.name === chosen ? 'active' : ''}" data-category-chip="${safe(item.name)}"><strong>${safe(item.name)}</strong><small>Prévu ${money(item.planned)} · Dépensé ${money(item.spent)}</small><b class="${item.spent > item.planned ? 'negative' : ''}">Reste ${money(item.planned - item.spent)}</b></button>`).join('');
   const budget = s.budget;
   return `${budgetMatrix()}
     <section class="panel month-control"><label for="budget-month">Mois à suivre</label><select id="budget-month">${monthlyTable(data).map(item => `<option value="${item.month}" ${item.month === month ? 'selected' : ''}>${safe(prettyMonth(item.month))}</option>`).join('')}</select>
-      <div class="month-totals"><div><small>Économie prévue</small><strong>${money(row?.forecastSavings ?? 0)}</strong></div><div><small>Avec Uber saisi</small><strong class="${savings < 0 ? 'negative' : ''}">${money(savings)}</strong></div><div><small>Cumul avec apports</small><strong>${money(row?.totalCumulative ?? 0)}</strong></div></div></section>
+      <div class="month-totals"><div><small>Solde actuel</small><strong class="${balance < 0 ? 'negative' : ''}">${money(balance)}</strong></div><div><small>Économie prévue</small><strong>${money(row?.forecastSavings ?? 0)}</strong></div><div><small>Gantt prévu</small><strong class="${(row?.forecastProjectBalance ?? 0) < 0 ? 'negative' : ''}">${money(row?.forecastProjectBalance ?? 0)}</strong></div></div><p class="note">Solde actuel = salaire saisi + gains encaissés − dépenses payées, personnelles et Calypço. L’objectif Uber reste dans la prévision.</p></section>
     ${!Object.keys(data.budgets).length ? '<p class="notice">Aucune prévision dans ce compte. Vérifie l’adresse dans Réglages, puis <button type="button" data-refresh-budget>actualise les données</button>.</p>' : ''}
     <section class="panel"><h2>Ajouter une dépense</h2><label for="category-filter">Choisir un poste</label><input id="category-filter" type="search" placeholder="Filtrer les postes" aria-label="Filtrer les postes" /><div class="category-chips">${categories || '<p class="muted">Aucun poste prévu pour ce mois.</p>'}</div>
       <form id="quick-expense-form" class="quick-entry"><label>Poste <select name="category">${[...s.categoryRows.map(item => item.name), 'Autre dépense personnelle'].map(name => `<option value="${safe(name)}" ${name === chosen ? 'selected' : ''}>${safe(name)}</option>`).join('')}</select></label><label>Montant dépensé (€) <input name="amount" type="number" min="0.01" step="0.01" inputmode="decimal" required /></label><label>Date <input name="date" type="date" value="${month === monthKey(today()) ? today() : `${month}-01`}" required /></label><label>Description (facultatif) <input name="description" maxlength="120" /></label><p id="quick-error" class="error" role="alert"></p><button type="submit">Enregistrer la dépense</button></form>
-      <p class="note">Une dépense prévue diminue le reste du poste. Seul un dépassement ou un nouveau poste réduit l’économie calculée.</p></section>
+      <p class="note">Chaque dépense diminue le solde actuel et le reste du poste. Un dépassement diminue aussi l’économie prévue et le Gantt.</p></section>
     <section class="panel"><h2>Gains Uber du mois</h2><p class="note">${money(s.uberActual)} encaissés sur ${money(s.uberTarget)} prévus · ${money(Math.max(0, s.uberTarget - s.uberActual))} encore à gagner.</p><form id="income-form" class="quick-entry"><label>Gain Uber (€) <input name="amount" type="number" min="0.01" step="0.01" inputmode="decimal" required /></label><label>Date du gain <input name="date" type="date" value="${month === monthKey(today()) ? today() : `${month}-01`}" required /></label><button type="submit">Ajouter ce gain</button><p id="income-error" class="error" role="alert"></p></form>
       ${data.incomes.filter(x => monthKey(x.date) === month).sort((a, b) => b.date.localeCompare(a.date)).map(x => `<div class="transaction"><div><b>${safe(x.kind === 'uber' || (!x.kind && /uber/i.test(x.label ?? '')) ? 'Uber' : (x.label || 'Autre revenu'))}</b><small>${safe(x.date)}</small></div><strong>${money(x.cents)}</strong><button class="icon-button" data-edit-income="${safe(x.id)}" aria-label="Corriger ce gain">✎</button><button class="icon-button" data-delete-income="${safe(x.id)}" aria-label="Supprimer ce gain">×</button></div>`).join('')}</section>
     ${history()}
@@ -96,17 +93,33 @@ function dashboard() {
 
 function history() {
   const rows = data.expenses.filter(x => monthKey(x.date) === month).sort((a, b) => b.date.localeCompare(a.date));
-  return `<section class="panel"><h2>Dépenses de ${safe(prettyMonth(month))}</h2>${rows.length ? rows.map(x => `<div class="transaction"><div><b>${safe(x.description || x.category)}</b><small>${safe(x.date)} · ${safe(x.scope)} · ${safe(x.category)}${x.commitmentId ? ' · échéance liée' : ''}</small></div><strong>${money(x.cents)}</strong><button class="icon-button" data-edit-expense="${safe(x.id)}" aria-label="Corriger cette dépense">✎</button><button class="icon-button" data-delete="${safe(x.id)}" aria-label="Supprimer cette dépense">×</button></div>`).join('') : '<p class="muted">Aucune dépense saisie ce mois-ci.</p>'}</section>`;
+  const item = x => `<div class="transaction"><div><b>${safe(x.description || x.category)}</b><small>${safe(x.date)} · ${safe(x.scope)} · ${safe(x.category)}${x.commitmentId ? ' · échéance liée' : ''}</small></div><strong>${money(x.cents)}</strong><button class="icon-button" data-edit-expense="${safe(x.id)}" aria-label="Corriger cette dépense">✎</button><button type="button" data-archive-expense="${safe(x.id)}">${x.archivedAt ? 'Restaurer' : 'Archiver'}</button><button class="icon-button" data-delete="${safe(x.id)}" aria-label="Supprimer cette dépense">×</button></div>`;
+  const active = rows.filter(x => !x.archivedAt), archived = rows.filter(x => x.archivedAt);
+  return `<section class="panel"><h2>Dépenses de ${safe(prettyMonth(month))}</h2>${active.length ? active.map(item).join('') : '<p class="muted">Aucune dépense active ce mois-ci.</p>'}
+    ${archived.length ? `<details class="archive-list"><summary>Archives des dépenses (${archived.length})</summary>${archived.map(item).join('')}</details>` : ''}<p class="note">Archiver masque une dépense du suivi actif ; elle reste dans les calculs et peut être restaurée.</p></section>`;
+}
+
+function ganttLine(block, item) {
+  const paid = data.expenses.filter(x => x.ganttBlockId === block.id && x.ganttLineId === item.id).reduce((n, x) => n + x.cents, 0);
+  return `<div class="gantt-row ${item.doneAt ? 'is-done' : ''}"><label class="gantt-check"><input type="checkbox" data-done-line="${safe(block.id)}" data-line="${safe(item.id)}" ${item.doneAt ? 'checked' : ''} /> Réalisé</label><form class="gantt-item" data-edit-line="${safe(block.id)}" data-line="${safe(item.id)}"><label>Poste <input name="label" value="${safe(item.label)}" required maxlength="120" /></label><label>Prévu (€) <input name="amount" type="number" min="0" step="0.01" value="${(item.plannedCents / 100).toFixed(2)}" required /></label><small>Payé ${money(paid)}</small><button type="submit">Enregistrer</button></form><div class="actions"><button type="button" data-archive-line="${safe(block.id)}" data-line="${safe(item.id)}">${item.archivedAt ? 'Restaurer' : 'Archiver'}</button><button type="button" data-remove-line="${safe(block.id)}" data-line="${safe(item.id)}">Retirer le poste</button></div></div>`;
+}
+
+function ganttBlock(block) {
+  const active = (block.items ?? []).filter(item => !item.archivedAt);
+  const archived = (block.items ?? []).filter(item => item.archivedAt);
+  return `<details class="gantt-block ${block.doneAt ? 'is-done' : ''}" data-block-details="${safe(block.id)}" ${expandedBlocks.has(block.id) ? 'open' : ''}><summary><span><small>${safe(block.phase || prettyMonth(block.month))}${block.doneAt ? ' · Réalisé' : ''}</small><strong>${safe(block.label)}</strong></span><span class="gantt-values"><b class="${block.balance < 0 ? 'negative' : ''}">${money(block.balance)}</b><small>+ ${money(block.inflow)} · − ${money(block.cost)}</small></span></summary>
+    ${block.note ? `<p class="note">${safe(block.note)}</p>` : ''}<div class="line"><span>Coût prévu</span><strong>${money(block.plannedCents)}</strong></div><div class="line"><span>Dépenses payées</span><strong>${money(block.actual)}</strong></div>${block.overrun ? line('En plus du prévu', block.overrun) : ''}
+    ${active.map(item => ganttLine(block, item)).join('')}${archived.length ? `<details class="archive-list"><summary>Postes archivés (${archived.length})</summary>${archived.map(item => ganttLine(block, item)).join('')}</details>` : ''}
+    ${block.kind ? '' : `<form class="gantt-add-line" data-add-line="${safe(block.id)}"><h3>Ajouter un poste</h3><label>Nom <input name="label" required maxlength="120" /></label><label>Prévu (€) <input name="amount" type="number" min="0" step="0.01" required /></label><button type="submit">Ajouter</button></form>
+    <form class="gantt-edit" data-edit-block="${safe(block.id)}"><h3>Modifier ce bloc</h3><label>Mois <input name="month" type="month" value="${safe(block.month)}" required /></label><label>Nom <input name="label" value="${safe(block.label)}" maxlength="120" required /></label><label>Coût total prévu (€) <input name="amount" type="number" min="0" step="0.01" value="${(block.plannedCents / 100).toFixed(2)}" required /></label><button type="submit">Enregistrer le bloc</button></form><div class="actions"><label class="gantt-check"><input type="checkbox" data-done-block="${safe(block.id)}" ${block.doneAt ? 'checked' : ''} /> Bloc réalisé</label><button type="button" data-add-block-expense="${safe(block.id)}">+ Dépense pour ce bloc</button><button type="button" data-archive-block="${safe(block.id)}">${block.archivedAt ? 'Restaurer' : 'Archiver'}</button><button type="button" data-remove-block="${safe(block.id)}">Retirer ce bloc</button></div>`}</details>`;
 }
 
 function forecasts() {
   const gantt = ganttTimeline(data, { forecastUber: true });
-  const withLoggedUber = new Map(ganttTimeline(data).map(block => [block.id, block]));
-  return `<section class="panel"><h2>Gantt lié au budget</h2><p class="note">Le tableau du budget est sur l’Accueil. Ici, chaque bloc reçoit les économies prévues et les apports, puis déduit son coût. « Avec Uber saisi » utilise uniquement les gains enregistrés. Ouvre un bloc pour modifier sa date, son coût ou le prix d’une ligne.</p>
-    ${gantt.length ? gantt.map(block => `<details class="gantt-block" data-block-details="${safe(block.id)}" ${expandedBlocks.has(block.id) ? 'open' : ''}><summary><span><small>${safe(block.phase || prettyMonth(block.month))}</small><strong>${safe(block.label)}</strong></span><span class="gantt-values"><b class="${block.balance < 0 ? 'negative' : ''}">Prévu ${money(block.balance)}</b><small>Avec Uber saisi : ${money(withLoggedUber.get(block.id)?.balance ?? block.balance)}</small><small>+ ${money(block.inflow)} · − ${money(block.cost)}</small></span></summary>
-      ${block.note ? `<p class="note">${safe(block.note)}</p>` : ''}<div class="line"><span>Coût prévu</span><strong>${money(block.plannedCents)}</strong></div><div class="line"><span>Dépenses saisies</span><strong>${money(block.actual)}</strong></div>${block.overrun ? line('En plus du prévu', block.overrun) : ''}
-      ${(block.items ?? []).map(item => { const paid = data.expenses.filter(x => x.ganttLineId === item.id).reduce((n, x) => n + x.cents, 0); return `<form class="gantt-item" data-edit-line="${safe(block.id)}" data-line="${safe(item.id)}"><span>${safe(item.label)}${item.note ? `<small>${safe(item.note)}</small>` : ''}<small>Saisi ${money(paid)}</small></span><span class="gantt-line-edit"><label>Prévu (€) <input name="amount" type="number" min="0" step="0.01" value="${(item.plannedCents / 100).toFixed(2)}" required /></label><button type="submit" aria-label="Enregistrer ${safe(item.label)}">Enregistrer</button></span></form>`; }).join('')}
-      ${block.kind ? '' : `<form class="gantt-edit" data-edit-block="${safe(block.id)}"><h3>Modifier ce bloc</h3><label>Mois <input name="month" type="month" value="${safe(block.month)}" required /></label><label>Nom <input name="label" value="${safe(block.label)}" maxlength="120" required /></label><label>Coût total prévu (€) <input name="amount" type="number" min="0" step="0.01" value="${(block.plannedCents / 100).toFixed(2)}" required /></label><button type="submit">Enregistrer le bloc</button></form><div class="actions"><button type="button" data-add-block-expense="${safe(block.id)}">+ Dépense pour ce bloc</button><button type="button" data-remove-block="${safe(block.id)}">Retirer ce bloc</button></div>`}</details>`).join('') : '<p class="muted">Aucun bloc dans ce compte. Vérifie l’adresse dans Réglages, puis <button type="button" data-refresh-budget>actualise les données</button>.</p>'}
+  const active = gantt.filter(block => !block.archivedAt), archived = gantt.filter(block => block.archivedAt);
+  return `<section class="panel"><h2>Gantt lié au budget</h2><p class="note">Chaque bloc reçoit les économies estimées et les apports, puis déduit son coût prévu et les éventuels dépassements. Coche les postes réalisés, modifie leurs prix et archive ceux qui sont terminés. Les éléments archivés restent dans les soldes.</p>
+    ${active.length ? active.map(ganttBlock).join('') : '<p class="muted">Aucun bloc actif.</p>'}
+    ${archived.length ? `<details class="archive-list"><summary>Blocs archivés (${archived.length})</summary>${archived.map(ganttBlock).join('')}</details>` : ''}
     <form id="block-form" class="stack-form"><h3>Ajouter un bloc au Gantt</h3><label>Mois <input name="month" type="month" value="${month}" required /></label><label>Nom du bloc <input name="label" required maxlength="120" /></label><label>Coût prévu (€) <input name="amount" type="number" min="0" step="0.01" required /></label><button type="submit">Ajouter le bloc</button></form></section>`;
 }
 
@@ -290,7 +303,7 @@ function bind() {
       selectedCategory = values.category;
       month = monthKey(values.date);
       save(); render();
-      announce(`Dépense enregistrée. Reste du poste actualisé, économie du mois : ${money(monthlySavings(data, month))}.`);
+      announce(`Dépense enregistrée. Solde actuel du mois : ${money(currentBalance(data, month))}.`);
     } catch (error) { quickExpense.querySelector('#quick-error').textContent = error.message; }
   };
   const form = document.querySelector('#expense-form');
@@ -308,16 +321,20 @@ function bind() {
         const commitment = data.commitments.find(c => c.id === values.commitmentId);
         if (commitment && (commitment.scope !== values.scope || commitment.month !== monthKey(values.date) || Number(values.count) !== 1)) throw new Error('Choisis une échéance du même budget et du même mois, avec un paiement unique.');
         if (values.ganttLineId && !(data.ganttBlocks ?? []).find(b => b.id === values.ganttBlockId)?.items.some(item => item.id === values.ganttLineId)) throw new Error('La ligne choisie doit appartenir au bloc du Gantt.');
-        const before = monthlySavings(data, monthKey(values.date));
         addExpense(data, values); save(); dialog = false; selectedBlock = ''; month = monthKey(values.date); render();
-        const after = monthlySavings(data, month);
-        announce(`Dépense enregistrée. Économie mensuelle prévue : ${money(after)}. Variation : ${money(after - before)}.`);
+        announce(`Dépense enregistrée. Solde actuel du mois : ${money(currentBalance(data, month))}.`);
       } catch (error) { form.querySelector('#form-error').textContent = error.message; }
     };
   }
   document.querySelectorAll('[data-delete]').forEach(button => button.onclick = () => {
     if (!confirm('Supprimer cette dépense ?')) return;
     data.expenses = data.expenses.filter(x => x.id !== button.dataset.delete); save(); render();
+  });
+  document.querySelectorAll('[data-archive-expense]').forEach(button => button.onclick = () => {
+    const expense = data.expenses.find(x => x.id === button.dataset.archiveExpense);
+    if (!expense) return;
+    expense.archivedAt = expense.archivedAt ? null : new Date().toISOString();
+    save(); render();
   });
   document.querySelectorAll('[data-delete-income]').forEach(button => button.onclick = () => {
     data.incomes = data.incomes.filter(x => x.id !== button.dataset.deleteIncome); save(); render();
@@ -347,10 +364,31 @@ function bind() {
   document.querySelectorAll('[data-edit-line]').forEach(edit => edit.onsubmit = event => {
     event.preventDefault();
     try {
-      updateGanttLine(data, edit.dataset.editLine, edit.dataset.line, Math.round(Number(edit.elements.amount.value) * 100));
+      updateGanttLine(data, edit.dataset.editLine, edit.dataset.line, Math.round(Number(edit.elements.amount.value) * 100), edit.elements.label.value);
       save(); render();
     } catch (error) { alert(error.message); }
   });
+  document.querySelectorAll('[data-add-line]').forEach(form => form.onsubmit = event => {
+    event.preventDefault();
+    try { addGanttLine(data, form.dataset.addLine, form.elements.label.value, Math.round(Number(form.elements.amount.value) * 100)); save(); render(); }
+    catch (error) { alert(error.message); }
+  });
+  document.querySelectorAll('[data-remove-line]').forEach(button => button.onclick = () => {
+    if (!confirm('Retirer ce poste prévu ? Ses paiements déjà enregistrés resteront dans le bloc.')) return;
+    try { removeGanttLine(data, button.dataset.removeLine, button.dataset.line); save(); render(); }
+    catch (error) { alert(error.message); }
+  });
+  for (const [attribute, flag, collection] of [
+    ['data-done-line', 'doneAt', 'items'], ['data-archive-line', 'archivedAt', 'items'],
+    ['data-done-block', 'doneAt', 'blocks'], ['data-archive-block', 'archivedAt', 'blocks']
+  ]) document.querySelectorAll(`[${attribute}]`).forEach(control => control.addEventListener('click', () => {
+    const blockId = control.getAttribute(attribute);
+    const block = (data.ganttBlocks ?? []).find(entry => entry.id === blockId);
+    const entry = collection === 'blocks' ? block : block?.items?.find(item => item.id === control.dataset.line);
+    if (!entry) return;
+    entry[flag] = entry[flag] ? null : new Date().toISOString();
+    save(); render();
+  }));
   document.querySelectorAll('[data-edit-block]').forEach(edit => edit.onsubmit = event => {
     event.preventDefault();
     try {
